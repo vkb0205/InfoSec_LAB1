@@ -1,4 +1,4 @@
-from fastapi import HTTPException, status
+from fastapi import status
 
 class VaultBaseException(Exception):
     """Exception class for Vault-related errors"""
