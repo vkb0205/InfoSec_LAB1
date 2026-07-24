@@ -1,0 +1,2 @@
+2026-07-24 17:08:52,929 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-24 17:08:52,929 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
