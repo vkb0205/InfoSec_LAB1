@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 
