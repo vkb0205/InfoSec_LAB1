@@ -19,6 +19,7 @@ from src.errors import INVALID_INPUT, STORAGE_ERROR, MiniVaultError
 
 VAULT_METADATA_FILE = "vault.json"
 USERS_FILE = "users.json"
+SESSIONS_FILE = "sessions.json"
 KV_SECRETS_FILE = "kv_secrets.json"
 TRANSIT_KEYS_FILE = "transit_keys.json"
 

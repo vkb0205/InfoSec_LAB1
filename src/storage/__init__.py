@@ -2,6 +2,7 @@
 
 from src.storage.repository import (
     KV_SECRETS_FILE,
+    SESSIONS_FILE,
     TRANSIT_KEYS_FILE,
     USERS_FILE,
     VAULT_METADATA_FILE,
@@ -11,6 +12,7 @@ from src.storage.repository import (
 __all__ = [
     "JsonRepository",
     "KV_SECRETS_FILE",
+    "SESSIONS_FILE",
     "TRANSIT_KEYS_FILE",
     "USERS_FILE",
     "VAULT_METADATA_FILE",

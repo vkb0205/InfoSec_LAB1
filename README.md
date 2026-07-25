@@ -5,7 +5,7 @@ operations inspired by HashiCorp Vault.
 
 ## Current status
 
-Person 1 Days 1–2 are implemented:
+Person 1 Days 1–3 are implemented:
 
 - Base package and report/data directory structure
 - Standard-library CLI skeleton
@@ -16,10 +16,14 @@ Person 1 Days 1–2 are implemented:
 - Argon2id key derivation with random salt
 - Random 256-bit DEK encrypted by AES-256-GCM
 - Locked startup and generic unlock failure behavior
-- Day 1 and Day 2 security tests
+- User registration and unique normalized email identities
+- Argon2id password hashing
+- Random 30-minute sessions with only token fingerprints stored
+- Persistent five-attempt, exactly five-minute account lockout
+- Day 1–3 security tests
 
-User authentication, KV encryption, and Transit operations are planned work;
-they are not represented as complete yet.
+KV encryption and Transit operations are planned work; they are not represented
+as complete yet.
 
 The authoritative assignment requirements are in `Crypt_proj1.md`. `PLAN.md`
 defines the three-person implementation schedule.
@@ -47,6 +51,7 @@ security demo. The planned runtime files are:
 |---|---|
 | `data/vault.json` | KDF metadata and encrypted DEK |
 | `data/users.json` | Password hashes and account state |
+| `data/sessions.json` | Hashed session tokens and expiration metadata |
 | `data/kv_secrets.json` | Encrypted KV records |
 | `data/transit_keys.json` | Encrypted named-key records |
 
@@ -75,6 +80,31 @@ derived wrapping key, and plaintext DEK are not.
 The metadata file always stores `"status": "locked"`. An unlocked state exists
 only inside a live `Vault` object, so constructing a new object or restarting
 the process always returns to the locked state.
+
+### Authentication design
+
+Registration and login use these choices:
+
+- Emails are trimmed, converted to lowercase, validated, and treated as unique
+  identities. This canonical form will also be used in KV owner paths.
+- User passphrases follow the same 12–128 character-class policy as the Master
+  Passphrase and are hashed using Argon2id with a fresh salt.
+- `users.json` stores only the Argon2id hash, failed-attempt count, and UTC
+  lockout timestamp. It never stores a user passphrase.
+- Login returns a 256-bit random URL-safe session token valid for 30 minutes.
+- `sessions.json` stores a SHA-256 fingerprint of that random token, not the raw
+  bearer token. SHA-256 is used only for high-entropy tokens; passwords always
+  use Argon2id.
+- Four consecutive failures return `UNAUTHENTICATED`. The fifth sets
+  `locked_until` to exactly five minutes after that attempt and returns
+  `ACCOUNT_LOCKED`.
+- Correct credentials cannot bypass an active lockout. At the exact expiration
+  timestamp the account is available and its failure counter resets.
+- Missing, unknown, or expired sessions return `UNAUTHENTICATED`.
+
+`AuthService.validate_session(token)` returns a `SessionIdentity` containing the
+normalized owner email. KV and Transit must call it before their ownership
+checks.
 
 ## Setup
 
@@ -107,6 +137,9 @@ python main.py interfaces
 python main.py status
 python main.py init
 python main.py unlock
+python main.py register --email alice@example.com
+python main.py login --email alice@example.com
+python main.py validate-session
 ```
 
 `init` and `unlock` prompt through `getpass`; the Master Passphrase is never a
@@ -117,6 +150,10 @@ Each command above launches a new process. Consequently, `unlock` currently
 demonstrates passphrase verification and process-local state, then that state
 ends with the process. Later feature commands must reuse the same live `Vault`
 object through a long-running CLI session or service process.
+
+User session records are persistent, so tokens returned by `login` can be
+validated by a later CLI process. Passphrases and tokens are read using
+`getpass`; only the newly issued token is returned in the login response.
 
 The `interfaces` command publishes the method signatures that the team members
 will implement on later days.
