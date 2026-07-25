@@ -1,0 +1,21 @@
+# Generated vault metadata and atomic publication temporaries
+data/vault_metadata.json
+data/.vault_metadata.json.*.tmp
+data/**/*.tmp
+data/users.json
+data/.users.json.*.tmp
+# Authentication records contain password-verification hashes; never commit them.
+data/users*.json
+
+# Python cache and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+.env*
+
+.clinerules
+.specify
+.report
+

@@ -1,10 +1,51 @@
-"""Shared error codes for Mini Vault."""
+"""Public domain errors for Mini Vault."""
 
-VAULT_LOCKED = "VAULT_LOCKED"
-UNAUTHENTICATED = "UNAUTHENTICATED"
-PERMISSION_DENIED = "PERMISSION_DENIED"
-NOT_FOUND = "NOT_FOUND"
-INVALID_KEY_USAGE = "INVALID_KEY_USAGE"
 INVALID_INPUT = "INVALID_INPUT"
-DUPLICATE_KEY = "DUPLICATE_KEY"
+ALREADY_INITIALIZED = "ALREADY_INITIALIZED"
 UNLOCK_FAILED = "UNLOCK_FAILED"
+VAULT_LOCKED = "VAULT_LOCKED"
+DUPLICATE_USER = "DUPLICATE_USER"
+INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
+ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
+UNAUTHENTICATED = "UNAUTHENTICATED"
+
+
+class VaultError(Exception):
+    """Base error exposing only a stable public code."""
+
+    code = "VAULT_ERROR"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
+class InvalidInputError(VaultError):
+    code = INVALID_INPUT
+
+
+class AlreadyInitializedError(VaultError):
+    code = ALREADY_INITIALIZED
+
+
+class UnlockFailedError(VaultError):
+    code = UNLOCK_FAILED
+
+
+class VaultLockedError(VaultError):
+    code = VAULT_LOCKED
+
+
+class DuplicateUserError(VaultError):
+    code = DUPLICATE_USER
+
+
+class InvalidCredentialsError(VaultError):
+    code = INVALID_CREDENTIALS
+
+
+class AccountLockedError(VaultError):
+    code = ACCOUNT_LOCKED
+
+
+class UnauthenticatedError(VaultError):
+    code = UNAUTHENTICATED
