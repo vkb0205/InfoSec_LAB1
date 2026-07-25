@@ -76,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     contracts_parser = subparsers.add_parser(
         "interfaces",
-        help="show the service interfaces agreed for later implementation days",
+        help="show the service interfaces agreed across the project modules",
     )
     contracts_parser.set_defaults(handler=_interfaces)
 
@@ -135,7 +135,7 @@ def _health(
         "status": "healthy",
         "service": "Mini Vault",
         "storage_backend": "json",
-        "implementation_stage": "person-1-day-6",
+        "implementation_stage": "person-1-day-7",
         "vault": vault.public_status(),
     }
 

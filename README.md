@@ -5,7 +5,7 @@ operations inspired by HashiCorp Vault.
 
 ## Current status
 
-Person 1 Days 1–6 are implemented:
+Person 1 Days 1–7 are implemented:
 
 - Base package and report/data directory structure
 - Standard-library CLI skeleton
@@ -28,6 +28,7 @@ Person 1 Days 1–6 are implemented:
 - Generic permission errors that do not disclose resource existence
 - Day 1–5 security tests
 - Day 6 rubric-aligned vault/auth acceptance suite and traceability matrix
+- Day 7 CLI-to-storage end-to-end integration test
 
 KV `write/read/delete` and Transit operations are planned work owned by Person 2
 and Person 3; they are not represented as complete yet.
@@ -221,13 +222,15 @@ Registration and login use these choices:
 normalized owner email. KV and Transit must call it before their ownership
 checks.
 
-## Setup
+## Installation
 
-Python 3.10 or newer is recommended.
+Python 3.10 or newer and `pip` are required. Run all commands from the project
+root directory.
 
 On Windows PowerShell:
 
 ```powershell
+python --version
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
@@ -237,52 +240,105 @@ Copy-Item .env.example .env
 On Linux or macOS:
 
 ```bash
+python3 --version
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-## Run
+The default data directory is `data/`. To use an isolated location, edit
+`MINI_VAULT_DATA_DIR` in `.env` before the first command. Runtime `.env` and
+`data/*.json` files are ignored by Git because they may contain account
+metadata or encrypted project data.
+
+## Run commands
+
+| Command | Purpose |
+|---|---|
+| `python main.py` | Show CLI help |
+| `python main.py health` | Check the application and public vault state |
+| `python main.py interfaces` | Display the agreed core, auth, KV, and Transit contracts |
+| `python main.py status` | Report whether the vault is initialized and locked |
+| `python main.py init` | Create the encrypted DEK and vault metadata |
+| `python main.py unlock` | Verify the Master Passphrase and decrypt the DEK in memory |
+| `python main.py lock` | Clear the process-local plaintext DEK |
+| `python main.py register --email alice@example.com` | Register a normalized unique account |
+| `python main.py login --email alice@example.com` | Issue a 30-minute session token |
+| `python main.py validate-session` | Validate a token entered through a hidden prompt |
+
+`init` and `unlock` prompt through `getpass`; the Master Passphrase is never a
+command-line argument, printed response, or stored field. Initialization asks
+for confirmation and leaves the current `Vault` object unlocked.
+
+Never place a Master Passphrase, user passphrase, or session token in a command
+argument. Passphrases and existing tokens are read through hidden prompts. The
+new session token is shown once by `login` so the client can use it.
+
+The `interfaces` command publishes the method signatures that every team
+service must follow during final integration.
+
+### Process-local unlock state
+
+Each standalone command starts a new process. Therefore, a successful
+`unlock` command proves that the encrypted DEK can be recovered, but the
+plaintext DEK is cleared when that process exits. A complete KV/Transit CLI
+must run feature commands in the same long-running process as `unlock`, or
+expose the services through a long-running API process. Session records are
+persistent, so a token returned by `login` can be validated by a later process.
+
+## Core and authentication example
+
+The following sequence exercises Person 1's completed workflow:
 
 ```bash
-python main.py
 python main.py health
-python main.py interfaces
-python main.py status
 python main.py init
+python main.py status
 python main.py unlock
 python main.py register --email alice@example.com
 python main.py login --email alice@example.com
 python main.py validate-session
 ```
 
-`init` and `unlock` prompt through `getpass`; the Master Passphrase is never a
-command-line argument, printed response, or stored field. Initialization asks
-for confirmation and leaves the current `Vault` object unlocked.
+All secret prompts are hidden. Use a Master Passphrase and user passphrase of
+12–128 characters containing uppercase, lowercase, number, and symbol
+characters.
 
-Each command above launches a new process. Consequently, `unlock` currently
-demonstrates passphrase verification and process-local state, then that state
-ends with the process. Later feature commands must reuse the same live `Vault`
-object through a long-running CLI session or service process.
+Representative responses, with the random token and timestamp shortened, are:
 
-User session records are persistent, so tokens returned by `login` can be
-validated by a later CLI process. Passphrases and tokens are read using
-`getpass`; only the newly issued token is returned in the login response.
+```json
+{"initialized": true, "status": "unlocked"}
+{"initialized": true, "status": "locked"}
+{"email": "alice@example.com", "registered": true}
+{
+  "email": "alice@example.com",
+  "token": "<random-session-token>",
+  "expires_at": "<UTC-timestamp>"
+}
+{"email": "alice@example.com", "expires_at": "<same-UTC-timestamp>"}
+```
 
-The `interfaces` command publishes the method signatures that the team members
-will implement on later days.
+The first response is from `init`. The next `status` command reports `locked`
+because it is a new process. Paste the token returned by `login` into the
+hidden `validate-session` prompt.
 
-## Test
+## Test commands
 
 ```bash
 python -m pytest -q
 python -m unittest discover -s tests -v
+python -m unittest tests.test_day7_person1_e2e -v
 ```
 
 The tests use reduced Argon2id costs to keep the suite fast. Runtime code uses
 the production defaults above, and the selected parameters are stored with the
 encrypted DEK for future unlocks.
+
+The focused Day 7 test reconstructs the services between commands to model
+process restarts. It verifies init, locked restart, unlock, registration,
+login, session validation, and the absence of plaintext passphrases or bearer
+tokens in JSON storage.
 
 ## Project structure
 
