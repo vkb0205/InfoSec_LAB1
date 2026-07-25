@@ -7,3 +7,4 @@ __pycache__/
 # Runtime data must not be committed accidentally.
 data/*.json
 data/logs/*.log
+data/logs/*.jsonl

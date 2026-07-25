@@ -1,5 +1,6 @@
 """Persistence adapters used by Mini Vault services."""
 
+from src.storage.audit_log import ACCESS_DENIED_LOG_FILE, AccessDeniedLogger
 from src.storage.repository import (
     KV_SECRETS_FILE,
     SESSIONS_FILE,
@@ -10,6 +11,8 @@ from src.storage.repository import (
 )
 
 __all__ = [
+    "ACCESS_DENIED_LOG_FILE",
+    "AccessDeniedLogger",
     "JsonRepository",
     "KV_SECRETS_FILE",
     "SESSIONS_FILE",

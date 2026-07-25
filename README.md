@@ -5,7 +5,7 @@ operations inspired by HashiCorp Vault.
 
 ## Current status
 
-Person 1 Days 1–4 are implemented:
+Person 1 Days 1–5 are implemented:
 
 - Base package and report/data directory structure
 - Standard-library CLI skeleton
@@ -23,7 +23,10 @@ Person 1 Days 1–4 are implemented:
 - Non-exporting, DEK-backed AES-GCM operations for KV and Transit
 - Reusable nonce/ciphertext/tag envelope with strict base64 parsing
 - In-process nonce-reuse protection and best-effort DEK memory clearing
-- Day 1–4 security tests
+- Shared vault/session/ownership request guard
+- Append-only JSON Lines logging for cross-owner access denials
+- Generic permission errors that do not disclose resource existence
+- Day 1–5 security tests
 
 KV `write/read/delete` and Transit operations are planned work owned by Person 2
 and Person 3; they are not represented as complete yet.
@@ -126,14 +129,66 @@ formal zeroization guarantee.
 
 Required order for future KV and Transit operations:
 
-1. `vault.require_unlocked()`
-2. `auth.validate_session(token)`
-3. Check ownership
-4. Call the DEK-backed encryption or decryption method
+1. `guard.authenticate(token)` checks the live Vault, then the session.
+2. Parse or load the resource owner only after authentication succeeds.
+3. `guard.require_owner(...)` checks ownership and audits a mismatch.
+4. Call the DEK-backed encryption or decryption method.
 
 The low-level `aes_gcm_encrypt` helper accepts an explicit nonce for vault
 initialization and tests. Feature services should use `Vault.encrypt_with_dek`
 so locked-state and nonce-generation checks cannot be skipped.
+
+### Shared authorization and denial logging
+
+KV and Transit must share the same live service instances:
+
+```python
+from src.core import RequestGuard
+from src.storage import AccessDeniedLogger
+
+audit = AccessDeniedLogger("data/logs")
+guard = RequestGuard(vault, auth, audit)
+```
+
+For KV, validate the token before parsing or comparing the owner path:
+
+```python
+identity = guard.authenticate(token)
+path_owner = parse_validated_secret_path(path)
+guard.require_owner(
+    identity,
+    path_owner,
+    operation="read",
+    resource_type="kv_path",
+    resource_id=path,
+)
+```
+
+For Transit, use `resource_type="transit_key"` and the denied key name as
+`resource_id`. If the owner is already safely available, `authorize_owner()`
+combines authentication and ownership validation.
+
+An ownership mismatch is logged before returning the same generic response for
+every resource:
+
+```json
+{
+  "error_code": "PERMISSION_DENIED",
+  "message": "Permission denied."
+}
+```
+
+Audit records are appended to `data/logs/access_denied.jsonl` and contain only:
+
+- UTC timestamp
+- requester email
+- operation
+- resource type (`kv_path` or `transit_key`)
+- denied path or key name
+
+The logger cannot accept session tokens, passphrases, plaintext secret data, or
+key material. JSON encoding prevents newline-based log injection. If the audit
+record cannot be written, authorization fails closed with `AUDIT_ERROR`.
 
 ### Authentication design
 

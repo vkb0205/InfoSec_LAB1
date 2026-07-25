@@ -36,6 +36,11 @@ INTERFACE_CONTRACTS = {
         "login(email, passphrase)",
         "validate_session(token)",
     ],
+    "security": [
+        "authenticate(token)",
+        "require_owner(identity, owner_email, operation, resource_type, resource_id)",
+        "authorize_owner(token, owner_email, operation, resource_type, resource_id)",
+    ],
     "kv": [
         "write(path, data, token)",
         "read(path, token)",
@@ -130,7 +135,7 @@ def _health(
         "status": "healthy",
         "service": "Mini Vault",
         "storage_backend": "json",
-        "implementation_stage": "person-1-day-4",
+        "implementation_stage": "person-1-day-5",
         "vault": vault.public_status(),
     }
 
