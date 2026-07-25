@@ -1,1 +1,9 @@
-./src/core/__pycache__
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.env
+
+# Runtime data must not be committed accidentally.
+data/*.json
+data/logs/*.log
