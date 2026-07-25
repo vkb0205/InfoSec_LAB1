@@ -5,7 +5,7 @@ operations inspired by HashiCorp Vault.
 
 ## Current status
 
-Person 1 Days 1–5 are implemented:
+Person 1 Days 1–6 are implemented:
 
 - Base package and report/data directory structure
 - Standard-library CLI skeleton
@@ -27,9 +27,15 @@ Person 1 Days 1–5 are implemented:
 - Append-only JSON Lines logging for cross-owner access denials
 - Generic permission errors that do not disclose resource existence
 - Day 1–5 security tests
+- Day 6 rubric-aligned vault/auth acceptance suite and traceability matrix
 
 KV `write/read/delete` and Transit operations are planned work owned by Person 2
 and Person 3; they are not represented as complete yet.
+
+The Day 6 suite proves that the shared request boundary returns `VAULT_LOCKED`
+for both KV and Transit request types before session or ownership processing.
+The same assertion must also be bound to the concrete feature operations after
+Person 2 and Person 3 implement their service classes.
 
 The authoritative assignment requirements are in `Crypt_proj1.md`. `PLAN.md`
 defines the three-person implementation schedule.

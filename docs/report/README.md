@@ -33,3 +33,6 @@ The report must explain:
 
 It must also contain an architecture diagram, demo screenshots, the task
 assignment, and any optional features actually completed.
+
+Person 1's Day 6 acceptance-test evidence is tracked in
+`person1-day6-test-matrix.md`.

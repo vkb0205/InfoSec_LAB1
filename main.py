@@ -135,7 +135,7 @@ def _health(
         "status": "healthy",
         "service": "Mini Vault",
         "storage_backend": "json",
-        "implementation_stage": "person-1-day-5",
+        "implementation_stage": "person-1-day-6",
         "vault": vault.public_status(),
     }
 
