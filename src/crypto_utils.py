@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,74 @@ AES_256_KEY_BYTES = 32
 AES_GCM_NONCE_BYTES = 12
 AES_GCM_TAG_BYTES = 16
 ARGON2_SALT_BYTES = 16
+
+
+@dataclass(frozen=True)
+class AesGcmEnvelope:
+    """AES-GCM nonce, ciphertext, and authentication tag.
+
+    The shape maps directly to the required KV JSON fields and can also be
+    packed as ``nonce || ciphertext || tag`` for wrapped keys and Transit.
+    """
+
+    nonce: bytes
+    ciphertext: bytes
+    tag: bytes
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.nonce, bytes)
+            or len(self.nonce) != AES_GCM_NONCE_BYTES
+        ):
+            raise ValueError("AES-GCM envelope nonce must be exactly 96 bits.")
+        if not isinstance(self.ciphertext, bytes):
+            raise ValueError("AES-GCM envelope ciphertext must be bytes.")
+        if not isinstance(self.tag, bytes) or len(self.tag) != AES_GCM_TAG_BYTES:
+            raise ValueError("AES-GCM envelope tag must be exactly 128 bits.")
+
+    def pack(self) -> bytes:
+        """Return ``nonce || ciphertext || tag``."""
+
+        return self.nonce + self.ciphertext + self.tag
+
+    def to_base64_fields(self) -> dict[str, str]:
+        """Return the exact encrypted fields required by KV JSON storage."""
+
+        return {
+            "nonce_b64": encode_base64(self.nonce),
+            "ciphertext_b64": encode_base64(self.ciphertext),
+            "tag_b64": encode_base64(self.tag),
+        }
+
+    @classmethod
+    def unpack(cls, value: bytes) -> "AesGcmEnvelope":
+        """Parse a packed envelope and reject malformed or truncated values."""
+
+        if not isinstance(value, bytes):
+            raise ValueError("Packed AES-GCM envelope must be bytes.")
+        minimum_length = AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES
+        if len(value) < minimum_length:
+            raise ValueError("Packed AES-GCM envelope is truncated.")
+        return cls(
+            nonce=value[:AES_GCM_NONCE_BYTES],
+            ciphertext=value[AES_GCM_NONCE_BYTES:-AES_GCM_TAG_BYTES],
+            tag=value[-AES_GCM_TAG_BYTES:],
+        )
+
+    @classmethod
+    def from_base64_fields(
+        cls,
+        value: Mapping[str, Any],
+    ) -> "AesGcmEnvelope":
+        """Parse the three required KV fields using strict base64 decoding."""
+
+        if not isinstance(value, Mapping):
+            raise ValueError("AES-GCM storage fields must be an object.")
+        return cls(
+            nonce=decode_base64(value.get("nonce_b64")),
+            ciphertext=decode_base64(value.get("ciphertext_b64")),
+            tag=decode_base64(value.get("tag_b64")),
+        )
 
 
 @dataclass(frozen=True)
@@ -115,13 +184,31 @@ def aes_gcm_encrypt(
     nonce: bytes,
     associated_data: bytes,
 ) -> bytes:
-    """Return ``nonce || ciphertext || tag`` using AES-256-GCM."""
+    """Low-level AES-256-GCM encryption with a caller-provided nonce.
 
-    if len(key) != AES_256_KEY_BYTES:
+    Application services should use ``Vault.encrypt_with_dek`` so nonce
+    generation and locked-state enforcement cannot be skipped.
+    """
+
+    if not isinstance(key, bytes) or len(key) != AES_256_KEY_BYTES:
         raise ValueError("AES-256-GCM requires a 256-bit key.")
-    if len(nonce) != AES_GCM_NONCE_BYTES:
+    if not isinstance(plaintext, bytes):
+        raise ValueError("AES-GCM plaintext must be bytes.")
+    if not isinstance(nonce, bytes) or len(nonce) != AES_GCM_NONCE_BYTES:
         raise ValueError("AES-GCM requires a 96-bit nonce in Mini Vault.")
-    return nonce + AESGCM(key).encrypt(nonce, plaintext, associated_data)
+    if not isinstance(associated_data, bytes):
+        raise ValueError("AES-GCM associated data must be bytes.")
+
+    ciphertext_and_tag = AESGCM(key).encrypt(
+        nonce,
+        plaintext,
+        associated_data,
+    )
+    return AesGcmEnvelope(
+        nonce=nonce,
+        ciphertext=ciphertext_and_tag[:-AES_GCM_TAG_BYTES],
+        tag=ciphertext_and_tag[-AES_GCM_TAG_BYTES:],
+    ).pack()
 
 
 def aes_gcm_decrypt(
@@ -132,15 +219,17 @@ def aes_gcm_decrypt(
 ) -> bytes:
     """Decrypt and authenticate ``nonce || ciphertext || tag``."""
 
-    minimum_length = AES_GCM_NONCE_BYTES + AES_GCM_TAG_BYTES
-    if len(key) != AES_256_KEY_BYTES:
+    if not isinstance(key, bytes) or len(key) != AES_256_KEY_BYTES:
         raise ValueError("AES-256-GCM requires a 256-bit key.")
-    if len(encrypted_blob) < minimum_length:
-        raise ValueError("AES-GCM encrypted value is truncated.")
+    if not isinstance(associated_data, bytes):
+        raise ValueError("AES-GCM associated data must be bytes.")
 
-    nonce = encrypted_blob[:AES_GCM_NONCE_BYTES]
-    ciphertext_and_tag = encrypted_blob[AES_GCM_NONCE_BYTES:]
-    return AESGCM(key).decrypt(nonce, ciphertext_and_tag, associated_data)
+    envelope = AesGcmEnvelope.unpack(encrypted_blob)
+    return AESGCM(key).decrypt(
+        envelope.nonce,
+        envelope.ciphertext + envelope.tag,
+        associated_data,
+    )
 
 
 def encode_base64(value: bytes) -> str:

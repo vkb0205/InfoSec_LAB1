@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import secrets
+import threading
 import unicodedata
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
+
 from src.crypto_utils import (
     AES_256_KEY_BYTES,
     AES_GCM_NONCE_BYTES,
     ARGON2_SALT_BYTES,
+    AesGcmEnvelope,
     Argon2idParameters,
     aes_gcm_decrypt,
     aes_gcm_encrypt,
@@ -21,6 +25,7 @@ from src.crypto_utils import (
 )
 from src.errors import (
     ALREADY_INITIALIZED,
+    INTEGRITY_ERROR,
     INVALID_INPUT,
     NOT_INITIALIZED,
     UNLOCK_FAILED,
@@ -134,7 +139,9 @@ class Vault:
         self._metadata_filename = metadata_filename
         self._kdf_parameters = kdf_parameters or Argon2idParameters()
         self._random_bytes = random_bytes
+        self._state_lock = threading.RLock()
         self._dek: bytearray | None = None
+        self._used_dek_nonces: set[bytes] = set()
 
     @property
     def is_initialized(self) -> bool:
@@ -142,7 +149,8 @@ class Vault:
 
     @property
     def is_locked(self) -> bool:
-        return self._dek is None
+        with self._state_lock:
+            return self._dek is None
 
     def public_status(self) -> dict[str, bool | str]:
         """Return non-sensitive state suitable for CLI or API responses."""
@@ -155,6 +163,10 @@ class Vault:
     def initialize(self, master_passphrase: str) -> dict[str, bool | str]:
         """Create and persist a new encrypted DEK on first run."""
 
+        with self._state_lock:
+            return self._initialize(master_passphrase)
+
+    def _initialize(self, master_passphrase: str) -> dict[str, bool | str]:
         if self.is_initialized:
             raise MiniVaultError(
                 ALREADY_INITIALIZED,
@@ -191,6 +203,10 @@ class Vault:
     def unlock(self, master_passphrase: str) -> dict[str, bool | str]:
         """Unlock using the master passphrase, returning only public state."""
 
+        with self._state_lock:
+            return self._unlock(master_passphrase)
+
+    def _unlock(self, master_passphrase: str) -> dict[str, bool | str]:
         if not self.is_initialized:
             raise MiniVaultError(NOT_INITIALIZED, "Vault is not initialized.")
 
@@ -229,21 +245,109 @@ class Vault:
     def lock(self) -> dict[str, bool | str]:
         """Forget the in-memory DEK and return the public locked state."""
 
-        if self._dek is not None:
-            for index in range(len(self._dek)):
-                self._dek[index] = 0
-            self._dek = None
+        with self._state_lock:
+            self._clear_dek()
         return self.public_status()
+
+    def encrypt_with_dek(
+        self,
+        plaintext: bytes,
+        *,
+        associated_data: bytes,
+    ) -> AesGcmEnvelope:
+        """Encrypt bytes with the in-memory DEK without exposing the key.
+
+        A fresh nonce is generated internally. The caller supplies associated
+        data so a future KV path or named-key identity can be authenticated
+        together with the ciphertext.
+        """
+
+        if not isinstance(plaintext, bytes):
+            raise MiniVaultError(INVALID_INPUT, "Plaintext must be bytes.")
+        if not isinstance(associated_data, bytes):
+            raise MiniVaultError(
+                INVALID_INPUT,
+                "Associated data must be bytes.",
+            )
+
+        with self._state_lock:
+            self._require_unlocked()
+            nonce = self._next_dek_nonce()
+            # The bytes copy remains local to this cryptographic operation and
+            # is never returned to the caller or persistence layer.
+            encrypted_blob = aes_gcm_encrypt(
+                bytes(self._dek),
+                plaintext,
+                nonce=nonce,
+                associated_data=associated_data,
+            )
+        return AesGcmEnvelope.unpack(encrypted_blob)
+
+    def decrypt_with_dek(
+        self,
+        envelope: AesGcmEnvelope,
+        *,
+        associated_data: bytes,
+    ) -> bytes:
+        """Authenticate and decrypt an envelope using the in-memory DEK."""
+
+        if not isinstance(envelope, AesGcmEnvelope):
+            raise MiniVaultError(
+                INVALID_INPUT,
+                "Encrypted value must be an AES-GCM envelope.",
+            )
+        if not isinstance(associated_data, bytes):
+            raise MiniVaultError(
+                INVALID_INPUT,
+                "Associated data must be bytes.",
+            )
+
+        with self._state_lock:
+            self._require_unlocked()
+            try:
+                return aes_gcm_decrypt(
+                    bytes(self._dek),
+                    envelope.pack(),
+                    associated_data=associated_data,
+                )
+            except (InvalidTag, TypeError, ValueError) as exc:
+                raise MiniVaultError(
+                    INTEGRITY_ERROR,
+                    "Encrypted data authentication failed.",
+                ) from exc
 
     def require_unlocked(self) -> None:
         """Guard future KV and Transit operations."""
 
-        if self.is_locked:
+        with self._state_lock:
+            self._require_unlocked()
+
+    def _require_unlocked(self) -> None:
+        if self._dek is None:
             raise MiniVaultError(VAULT_LOCKED, "Vault is locked.")
 
+    def _clear_dek(self) -> None:
+        if self._dek is not None:
+            for index in range(len(self._dek)):
+                self._dek[index] = 0
+            self._dek = None
+        self._used_dek_nonces.clear()
+
     def _replace_dek(self, value: bytes) -> None:
-        self.lock()
-        self._dek = bytearray(value)
+        with self._state_lock:
+            self._clear_dek()
+            self._dek = bytearray(value)
+
+    def _next_dek_nonce(self) -> bytes:
+        # Random 96-bit nonces already have negligible collision probability.
+        # Tracking them additionally prevents accidental reuse within a live
+        # Vault instance, including with an injected faulty random source.
+        for _attempt in range(8):
+            nonce = self._secure_random(AES_GCM_NONCE_BYTES)
+            if nonce not in self._used_dek_nonces:
+                self._used_dek_nonces.add(nonce)
+                return nonce
+        raise RuntimeError("Could not generate a fresh AES-GCM nonce.")
 
     def _secure_random(self, length: int) -> bytes:
         value = self._random_bytes(length)

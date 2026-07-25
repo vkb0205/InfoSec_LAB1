@@ -5,7 +5,7 @@ operations inspired by HashiCorp Vault.
 
 ## Current status
 
-Person 1 Days 1–3 are implemented:
+Person 1 Days 1–4 are implemented:
 
 - Base package and report/data directory structure
 - Standard-library CLI skeleton
@@ -20,10 +20,13 @@ Person 1 Days 1–3 are implemented:
 - Argon2id password hashing
 - Random 30-minute sessions with only token fingerprints stored
 - Persistent five-attempt, exactly five-minute account lockout
-- Day 1–3 security tests
+- Non-exporting, DEK-backed AES-GCM operations for KV and Transit
+- Reusable nonce/ciphertext/tag envelope with strict base64 parsing
+- In-process nonce-reuse protection and best-effort DEK memory clearing
+- Day 1–4 security tests
 
-KV encryption and Transit operations are planned work; they are not represented
-as complete yet.
+KV `write/read/delete` and Transit operations are planned work owned by Person 2
+and Person 3; they are not represented as complete yet.
 
 The authoritative assignment requirements are in `Crypt_proj1.md`. `PLAN.md`
 defines the three-person implementation schedule.
@@ -80,6 +83,57 @@ derived wrapping key, and plaintext DEK are not.
 The metadata file always stores `"status": "locked"`. An unlocked state exists
 only inside a live `Vault` object, so constructing a new object or restarting
 the process always returns to the locked state.
+
+### DEK operation contract for KV and Transit
+
+The raw DEK has no getter and must never be returned by an API. Code that needs
+DEK protection uses:
+
+```python
+envelope = vault.encrypt_with_dek(
+    plaintext_bytes,
+    associated_data=b"mini-vault:kv:v1:" + path.encode("utf-8"),
+)
+
+stored_fields = envelope.to_base64_fields()
+
+restored = AesGcmEnvelope.from_base64_fields(stored_fields)
+plaintext = vault.decrypt_with_dek(
+    restored,
+    associated_data=b"mini-vault:kv:v1:" + path.encode("utf-8"),
+)
+```
+
+`AesGcmEnvelope` contains only:
+
+```json
+{
+  "nonce_b64": "...",
+  "ciphertext_b64": "...",
+  "tag_b64": "..."
+}
+```
+
+The Vault generates the 96-bit nonce internally and tracks nonces used with the
+live DEK to prevent accidental in-process reuse. AAD binds ciphertext to its
+intended context: changing the KV path, owner, or named-key identity causes
+authentication failure.
+
+`lock()` overwrites the mutable in-memory DEK buffer before releasing it.
+Because Python and third-party cryptographic libraries may create immutable
+temporary copies internally, this is best-effort memory clearing rather than a
+formal zeroization guarantee.
+
+Required order for future KV and Transit operations:
+
+1. `vault.require_unlocked()`
+2. `auth.validate_session(token)`
+3. Check ownership
+4. Call the DEK-backed encryption or decryption method
+
+The low-level `aes_gcm_encrypt` helper accepts an explicit nonce for vault
+initialization and tests. Feature services should use `Vault.encrypt_with_dek`
+so locked-state and nonce-generation checks cannot be skipped.
 
 ### Authentication design
 

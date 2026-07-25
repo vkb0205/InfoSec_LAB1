@@ -25,7 +25,12 @@ from src.storage.repository import (
 
 
 INTERFACE_CONTRACTS = {
-    "core": ["initialize(master_passphrase)", "unlock(master_passphrase)"],
+    "core": [
+        "initialize(master_passphrase)",
+        "unlock(master_passphrase)",
+        "encrypt_with_dek(plaintext, associated_data)",
+        "decrypt_with_dek(envelope, associated_data)",
+    ],
     "auth": [
         "register(email, passphrase, confirm_passphrase)",
         "login(email, passphrase)",
@@ -125,7 +130,7 @@ def _health(
         "status": "healthy",
         "service": "Mini Vault",
         "storage_backend": "json",
-        "implementation_stage": "person-1-day-3",
+        "implementation_stage": "person-1-day-4",
         "vault": vault.public_status(),
     }
 
