@@ -1,19 +1,21 @@
-"""Mini Vault command-line entry point.
-
-Day 1 provides a runnable shell and publishes the interfaces planned for later
-days.  Security-sensitive commands are added only when their implementations
-and tests exist.
-"""
+"""Mini Vault command-line entry point."""
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
+import secrets
 import sys
 from collections.abc import Sequence
 from typing import Any
 
-from src.errors import MiniVaultError
+from dotenv import load_dotenv
+
+from src.core.vault import Vault
+from src.errors import INVALID_INPUT, MiniVaultError
+from src.storage.repository import VAULT_METADATA_FILE, JsonRepository
 
 
 INTERFACE_CONTRACTS = {
@@ -42,7 +44,7 @@ INTERFACE_CONTRACTS = {
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the Day 1 CLI without performing any application work."""
+    """Build the CLI without placing passphrases in command arguments."""
 
     parser = argparse.ArgumentParser(
         prog="mini-vault",
@@ -61,23 +63,92 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the service interfaces agreed for later implementation days",
     )
     contracts_parser.set_defaults(handler=_interfaces)
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="show whether the vault is initialized and locked",
+    )
+    status_parser.set_defaults(handler=_status)
+
+    init_parser = subparsers.add_parser(
+        "init",
+        help="initialize a new vault and prompt securely for its passphrase",
+    )
+    init_parser.set_defaults(handler=_initialize)
+
+    unlock_parser = subparsers.add_parser(
+        "unlock",
+        help="unlock the vault for the lifetime of this CLI process",
+    )
+    unlock_parser.set_defaults(handler=_unlock)
+
+    lock_parser = subparsers.add_parser(
+        "lock",
+        help="remove the DEK from this CLI process",
+    )
+    lock_parser.set_defaults(handler=_lock)
     return parser
 
 
-def _health(_args: argparse.Namespace) -> dict[str, str]:
+def _health(_args: argparse.Namespace, vault: Vault) -> dict[str, Any]:
     return {
         "status": "healthy",
         "service": "Mini Vault",
         "storage_backend": "json",
-        "implementation_stage": "person-1-day-1",
+        "implementation_stage": "person-1-day-2",
+        "vault": vault.public_status(),
     }
 
 
-def _interfaces(_args: argparse.Namespace) -> dict[str, Any]:
+def _interfaces(_args: argparse.Namespace, _vault: Vault) -> dict[str, Any]:
     return {"interfaces": INTERFACE_CONTRACTS}
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _status(_args: argparse.Namespace, vault: Vault) -> dict[str, bool | str]:
+    return vault.public_status()
+
+
+def _initialize(
+    _args: argparse.Namespace,
+    vault: Vault,
+) -> dict[str, bool | str]:
+    passphrase = getpass.getpass("New Master Passphrase: ")
+    confirmation = getpass.getpass("Confirm Master Passphrase: ")
+    if not secrets.compare_digest(
+        passphrase.encode("utf-8"),
+        confirmation.encode("utf-8"),
+    ):
+        raise MiniVaultError(INVALID_INPUT, "Master passphrases do not match.")
+    return vault.initialize(passphrase)
+
+
+def _unlock(_args: argparse.Namespace, vault: Vault) -> dict[str, bool | str]:
+    passphrase = getpass.getpass("Master Passphrase: ")
+    return vault.unlock(passphrase)
+
+
+def _lock(_args: argparse.Namespace, vault: Vault) -> dict[str, bool | str]:
+    return vault.lock()
+
+
+def _default_vault() -> Vault:
+    load_dotenv()
+    data_dir = os.getenv("MINI_VAULT_DATA_DIR", "data")
+    metadata_filename = os.getenv(
+        "MINI_VAULT_VAULT_FILE",
+        VAULT_METADATA_FILE,
+    )
+    return Vault(
+        JsonRepository(data_dir),
+        metadata_filename=metadata_filename,
+    )
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    vault: Vault | None = None,
+) -> int:
     """Run the CLI and return a process exit code."""
 
     parser = build_parser()
@@ -87,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        result = args.handler(args)
+        result = args.handler(args, vault or _default_vault())
     except MiniVaultError as exc:
         print(json.dumps(exc.to_dict()), file=sys.stderr)
         return 1

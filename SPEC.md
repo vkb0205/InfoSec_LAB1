@@ -1,6 +1,6 @@
 # SPEC.md — Mini Vault
 
-Source: `LAB1/Crypt_proj1.pdf` — Assignment 1, Computer Security Course
+Source: `Crypt_proj1.md` — Assignment 1, Computer Security Course
 
 ## 1. Product Overview
 

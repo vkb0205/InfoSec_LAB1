@@ -43,6 +43,11 @@ class JsonRepository:
             )
         return self.data_dir / candidate
 
+    def exists(self, filename: str) -> bool:
+        """Return whether a validated storage file already exists."""
+
+        return self._path_for(filename).is_file()
+
     def load(self, filename: str) -> dict[str, Any]:
         """Return a stored JSON object, or an empty object if it does not exist."""
 

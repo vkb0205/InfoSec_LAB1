@@ -1,6 +1,5 @@
-"""Core vault package.
+"""Core vault initialization and process-local lock state."""
 
-Day 2 owns vault initialization, unlock, and in-memory DEK management.  Shared
-errors live in :mod:`src.errors` so this package remains independent of the CLI
-or any optional web framework.
-"""
+from src.core.vault import Vault, VaultMetadata, validate_master_passphrase
+
+__all__ = ["Vault", "VaultMetadata", "validate_master_passphrase"]
