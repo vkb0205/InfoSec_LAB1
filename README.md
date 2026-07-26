@@ -10,6 +10,7 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - Locked-vault gates for future KV and Transit operations
 - User registration and Argon2-protected login
 - Process-local, 30-minute session token authentication
+- DEK-wrapped, owner-bound Transit AES key creation, listing, and revocation
 - Encrypted KV secret storage (future feature)
 - Transit encryption/decryption service (future feature)
 - Signing and verification service (future feature)
@@ -91,6 +92,14 @@ python main.py login
 ```
 
 Tokens are valid only in the issuing process for 30 minutes. Five consecutive incorrect passphrases lock that account for five minutes; failures print only stable codes such as `INVALID_CREDENTIALS` or `ACCOUNT_LOCKED`. Account records are held in `data/users.json`, which is ignored by Git and contains Argon2 verification hashes and lockout state only—never sessions or plaintext passphrases.
+
+### Transit named keys
+
+`TransitService.create_key`, `list_keys`, and `revoke_key` implement Feature 2.1.
+Duplicate names are rejected per owner with `DUPLICATE_KEY`; different owners
+may use the same name. Named AES-256 keys are wrapped with the vault DEK before
+`data/transit_keys.json` is written. Public results contain only the key name,
+usage, and operation status—never key material.
 
 ## Test
 

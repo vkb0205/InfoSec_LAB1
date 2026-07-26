@@ -39,3 +39,19 @@ pytest
 ```
 
 Current Feature 0.1 suite covers initialization contracts, no-plaintext persistence, weak passphrase rejection, create-only publication, fresh entropy, restart locked state, correct unlock, generic unlock failures, KDF bounds, CLI behavior, and locked KV/Transit gates.
+
+## Feature 2.1 — Transit Named Key Management
+
+- `create_key` generates a fresh 32-byte AES-256 key after the vault-unlocked
+  and session-validation gates.
+- The named key is bound to its name, owner email, and
+  `key_usage = "ENCRYPT_DECRYPT"`.
+- AES-256-GCM wraps the key with the in-memory DEK. The stored base64 envelope
+  is `nonce || ciphertext || tag`; the owner/name/usage metadata is authenticated
+  as associated data.
+- `list_keys` returns only the current owner's key names and usages.
+- `revoke_key` permanently removes only the current owner's matching key.
+- Duplicate names are rejected with `DUPLICATE_KEY` within one owner's
+  namespace. Different owners may independently use the same name.
+- Public service results never contain plaintext or base64-encoded raw key
+  material.

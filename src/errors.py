@@ -8,6 +8,8 @@ DUPLICATE_USER = "DUPLICATE_USER"
 INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 UNAUTHENTICATED = "UNAUTHENTICATED"
+DUPLICATE_KEY = "DUPLICATE_KEY"
+KEY_NOT_FOUND = "KEY_NOT_FOUND"
 
 
 class VaultError(Exception):
@@ -49,3 +51,11 @@ class AccountLockedError(VaultError):
 
 class UnauthenticatedError(VaultError):
     code = UNAUTHENTICATED
+
+
+class DuplicateKeyError(VaultError):
+    code = DUPLICATE_KEY
+
+
+class KeyNotFoundError(VaultError):
+    code = KEY_NOT_FOUND
