@@ -246,6 +246,12 @@ class TransitKeyRepository:
             if record["owner_email"] == owner_email
         ]
 
+    def get_key(self, owner_email: str, key_name: str) -> dict[str, Any]:
+        for record in self.read()["keys"]:
+            if (record["owner_email"], record["key_name"]) == (owner_email, key_name):
+                return record
+        raise KeyNotFoundError()
+
     def delete_key(self, owner_email: str, key_name: str) -> None:
         store = self.read()
         remaining = [

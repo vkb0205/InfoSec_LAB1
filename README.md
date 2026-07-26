@@ -11,8 +11,8 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - User registration and Argon2-protected login
 - Process-local, 30-minute session token authentication
 - DEK-wrapped, owner-bound Transit AES key creation, listing, and revocation
+- Transit AES-GCM encryption and authenticated decryption
 - Encrypted KV secret storage (future feature)
-- Transit encryption/decryption service (future feature)
 - Signing and verification service (future feature)
 
 ## Setup
@@ -100,6 +100,14 @@ Duplicate names are rejected per owner with `DUPLICATE_KEY`; different owners
 may use the same name. Named AES-256 keys are wrapped with the vault DEK before
 `data/transit_keys.json` is written. Public results contain only the key name,
 usage, and operation status—never key material.
+
+### Transit encryption and decryption
+
+`TransitService.encrypt` accepts base64 plaintext and returns
+`vault:<key_name>:<base64(nonce+ciphertext+tag)>`. `TransitService.decrypt`
+reads the key name from that envelope, verifies the owner and key usage, and
+returns base64 plaintext only after AES-GCM authentication succeeds. Malformed
+input, revoked keys, wrong key usage, and modified ciphertext are rejected.
 
 ## Test
 

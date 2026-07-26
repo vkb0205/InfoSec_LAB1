@@ -10,6 +10,9 @@ ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 UNAUTHENTICATED = "UNAUTHENTICATED"
 DUPLICATE_KEY = "DUPLICATE_KEY"
 KEY_NOT_FOUND = "KEY_NOT_FOUND"
+INVALID_CIPHERTEXT = "INVALID_CIPHERTEXT"
+DECRYPTION_FAILED = "DECRYPTION_FAILED"
+INVALID_KEY_USAGE = "INVALID_KEY_USAGE"
 
 
 class VaultError(Exception):
@@ -59,3 +62,15 @@ class DuplicateKeyError(VaultError):
 
 class KeyNotFoundError(VaultError):
     code = KEY_NOT_FOUND
+
+
+class InvalidCiphertextError(VaultError):
+    code = INVALID_CIPHERTEXT
+
+
+class DecryptionFailedError(VaultError):
+    code = DECRYPTION_FAILED
+
+
+class InvalidKeyUsageError(VaultError):
+    code = INVALID_KEY_USAGE
