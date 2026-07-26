@@ -1,5 +1,6 @@
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 
 class CryptoEngine:
     def __init__(self, encryption_key: bytes):
@@ -7,32 +8,34 @@ class CryptoEngine:
         Khởi tạo Engine với Master Key 256-bit (32 bytes).
         """
         if len(encryption_key) != 32:
-            raise ValueError("Encryption key phải có độ dài đúng 32 bytes (256-bit).")
+            raise ValueError("VAULT_LOCKED: Encryption key phải có độ dài đúng 32 bytes (256-bit).")
         self.aesgcm = AESGCM(encryption_key)
 
-    def encrypt(self, plaintext: bytes) -> bytes:
+    def encrypt(self, plaintext: bytes) -> tuple:
         """
         Mã hóa dữ liệu. Sinh fresh nonce cho mỗi lần gọi.
-        Format trả về: Nonce (12B) + Ciphertext + Auth Tag (16B)
+        Trả về tuple: (nonce, ciphertext, tag)
         """
         # Generate fresh 12-byte (96-bit) nonce per write
         nonce = os.urandom(12)
         
-        # Mã hóa và tự động đính kèm Authentication Tag (16 bytes) ở cuối
-        ciphertext = self.aesgcm.encrypt(nonce, plaintext, None)
+        # Mã hóa (AESGCM tự động đính kèm 16 bytes auth tag ở cuối)
+        encrypted_payload = self.aesgcm.encrypt(nonce, plaintext, None)
         
-        return nonce + ciphertext
+        # Tách Ciphertext và Tag (16 bytes cuối cùng)
+        ciphertext = encrypted_payload[:-16]
+        tag = encrypted_payload[-16:]
+        
+        return nonce, ciphertext, tag
 
-    def decrypt(self, encrypted_payload: bytes) -> bytes:
+    def decrypt(self, nonce: bytes, ciphertext: bytes, tag: bytes) -> bytes:
         """
-        Giải mã dữ liệu. Tự động kiểm tra tính toàn vẹn (Tampering).
+        Giải mã dữ liệu với Nonce, Ciphertext và Tag riêng biệt.
         """
-        # Tách Nonce (12 bytes đầu) và Ciphertext + Tag (phần còn lại)
-        nonce = encrypted_payload[:12]
-        ciphertext = encrypted_payload[12:]
-        
         try:
-            # Giải mã và xác minh Tag. Nếu sai sẽ raise InvalidTag
-            return self.aesgcm.decrypt(nonce, ciphertext, None)
-        except Exception as e:
-            raise ValueError("Giải mã thất bại: Dữ liệu đã bị can thiệp (Tampering Detected!)") from e
+            # Nối lại ciphertext và tag để thư viện xử lý
+            payload = ciphertext + tag
+            return self.aesgcm.decrypt(nonce, payload, None)
+        except InvalidTag:
+            # Bắt lỗi tag mismatch
+            raise ValueError("AUTHENTICATION_TAG_MISMATCH: Dữ liệu đã bị can thiệp!")

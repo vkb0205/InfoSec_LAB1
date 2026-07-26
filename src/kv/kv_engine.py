@@ -3,19 +3,15 @@ import time
 import logging
 import os
 
-# 1. TÌM ĐƯỜNG DẪN GỐC VÀ TẠO THƯ MỤC LOG
+# Cấu hình logging
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
-
 LOG_DIR = os.path.join(PROJECT_ROOT, "data", "logs")
-os.makedirs(LOG_DIR, exist_ok=True)  # Tạo thư mục nếu chưa tồn tại
+os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "access_denied.log")
 
-# 2. CẤU HÌNH LOGGER GHI VÀO FILE
 kv_logger = logging.getLogger("KVEngineLogger")
 kv_logger.setLevel(logging.WARNING)
-
-# Ép logger ghi log xuống file (FileHandler) thay vì in ra màn hình
 if not kv_logger.handlers:
     fh = logging.FileHandler(LOG_FILE, encoding='utf-8')
     fh.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
@@ -23,11 +19,6 @@ if not kv_logger.handlers:
 
 class KVEngine:
     def __init__(self, crypto_engine, storage_backend, auth_module):
-        """
-        :param crypto_engine: Instance của CryptoEngine (chứa AES-GCM)
-        :param storage_backend: Interface lưu trữ đĩa từ src/storage/
-        :param auth_module: Interface xác thực từ src/auth/
-        """
         self.crypto = crypto_engine
         self.store = storage_backend 
         self.auth = auth_module
@@ -37,81 +28,102 @@ class KVEngine:
         kv_logger.warning(msg)
 
     def _verify_path_rule(self, path: str) -> str:
-        """
-        Kiểm tra tính hợp lệ của path và trích xuất email chủ sở hữu.
-        Quy tắc: secret/<email>/...
-        """
         parts = path.split('/')
         if len(parts) < 3 or parts[0] != 'secret':
             raise ValueError("Định dạng path không hợp lệ. Phải tuân thủ: 'secret/<email>/...'")
-        
-        owner_email = parts[1]
-        return owner_email
+        return parts[1]
 
     def _authorize(self, operation: str, path: str, token: str) -> str:
-        """
-        Xác minh token và đối chiếu quyền sở hữu với đường dẫn.
-        """
         owner_email = self._verify_path_rule(path)
-        
-        # Gọi sang src/auth/ để lấy email thực sự của user đang giữ token
-        caller_email = self.auth.verify_token(token)
+        try:
+            caller_email = self.auth.verify_token(token)
+        except Exception:
+            raise PermissionError("UNAUTHENTICATED")
 
         if caller_email != owner_email:
             self._log_denied(operation, path, caller_email, owner_email)
-            raise PermissionError(f"Access Denied: Token không có quyền truy cập vào path của {owner_email}")
+            raise PermissionError("PERMISSION_DENIED")
 
         return owner_email
 
     # ==========================================
-    # KV MODULE INTERFACES
+    # API CONTRACT IMPLEMENTATION (VERSIONING)
     # ==========================================
 
-    def write(self, path: str, data: str, token: str) -> bool:
-        """Mã hóa và lưu trữ dữ liệu tại path chỉ định."""
+    def write(self, path: str, data: str, token: str) -> dict:
         owner_email = self._authorize("WRITE", path, token)
 
-        # 1. Mã hóa dữ liệu (sinh ra bytes)
-        encrypted_bytes = self.crypto.encrypt(data.encode('utf-8'))
+        # 1. Mã hóa dữ liệu
+        nonce, ciphertext, tag = self.crypto.encrypt(data.encode('utf-8'))
         
-        # 2. Encode sang Base64 để lưu trữ an toàn dưới dạng text/JSON
-        b64_payload = base64.b64encode(encrypted_bytes).decode('utf-8')
+        # 2. Base64 Encode
+        nonce_b64 = base64.b64encode(nonce).decode('utf-8')
+        ciphertext_b64 = base64.b64encode(ciphertext).decode('utf-8')
+        tag_b64 = base64.b64encode(tag).decode('utf-8')
+        current_time = int(time.time())
 
-        # 3. Đóng gói record
-        record = {
-            "owner": owner_email,
-            "created_at": int(time.time()),
-            "payload": b64_payload
+        # 3. Lấy record cũ để xử lý Versioning
+        record = self.store.get(path)
+        if not record or "history" not in record:
+            record = {
+                "path": path,
+                "latest_version": 0,
+                "history": []
+            }
+
+        new_version = record["latest_version"] + 1
+
+        # 4. Đóng gói phiên bản mới
+        version_data = {
+            "version": new_version,
+            "nonce_b64": nonce_b64,
+            "ciphertext_b64": ciphertext_b64,
+            "tag_b64": tag_b64,
+            "created_at": current_time
         }
 
-        # 4. Lưu xuống storage backend
+        # 5. Cập nhật record và lưu trữ
+        record["history"].append(version_data)
+        record["latest_version"] = new_version
         self.store.set(path, record)
-        return True
+        
+        return {
+            "version": new_version,
+            "created_at": current_time,
+            "updated_at": current_time
+        }
 
-    def read(self, path: str, token: str) -> str:
-        """Đọc và giải mã dữ liệu từ path chỉ định."""
-        owner_email = self._authorize("READ", path, token)
+    def read(self, path: str, token: str, version: int = None) -> str:
+        self._authorize("READ", path, token)
 
-        # 1. Lấy record từ storage
         record = self.store.get(path)
-        if not record:
-            raise KeyError(f"Path không tồn tại: {path}")
+        if not record or "history" not in record:
+            raise KeyError("NOT_FOUND")
 
-        # 2. Decode Base64 lấy lại bytes thô
-        encrypted_bytes = base64.b64decode(record["payload"])
+        # Xác định phiên bản cần đọc (mặc định là mới nhất)
+        target_version = version if version is not None else record["latest_version"]
+        
+        # Tìm dữ liệu của phiên bản tương ứng
+        version_data = next((v for v in record["history"] if v["version"] == target_version), None)
+        if not version_data:
+            raise KeyError(f"VERSION_NOT_FOUND: {target_version}")
 
-        # 3. Giải mã và kiểm tra tính toàn vẹn (Tampering check)
-        decrypted_bytes = self.crypto.decrypt(encrypted_bytes)
+        # Giải mã Base64
+        nonce = base64.b64decode(version_data["nonce_b64"])
+        ciphertext = base64.b64decode(version_data["ciphertext_b64"])
+        tag = base64.b64decode(version_data["tag_b64"])
+
+        # Giải mã và kiểm tra tính toàn vẹn
+        decrypted_bytes = self.crypto.decrypt(nonce, ciphertext, tag)
         
         return decrypted_bytes.decode('utf-8')
 
-    def delete(self, path: str, token: str) -> bool:
-        """Xóa vĩnh viễn dữ liệu tại path chỉ định."""
+    def delete(self, path: str, token: str) -> str:
         self._authorize("DELETE", path, token)
 
-        # Kiểm tra tồn tại trước khi xóa
         if not self.store.exists(path):
-            return False
+            raise KeyError("NOT_FOUND")
 
+        # Xóa vĩnh viễn toàn bộ lịch sử
         self.store.delete(path)
-        return True
+        return "DELETED_SUCCESSFULLY"
