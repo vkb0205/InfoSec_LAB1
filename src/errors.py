@@ -14,6 +14,7 @@ INVALID_CIPHERTEXT = "INVALID_CIPHERTEXT"
 DECRYPTION_FAILED = "DECRYPTION_FAILED"
 INVALID_KEY_USAGE = "INVALID_KEY_USAGE"
 PERMISSION_DENIED = "PERMISSION_DENIED"
+INVALID_SIGNING_ALGORITHM = "INVALID_SIGNING_ALGORITHM"
 
 
 class VaultError(Exception):
@@ -79,3 +80,7 @@ class InvalidKeyUsageError(VaultError):
 
 class PermissionDeniedError(VaultError):
     code = PERMISSION_DENIED
+
+
+class InvalidSigningAlgorithmError(VaultError):
+    code = INVALID_SIGNING_ALGORITHM

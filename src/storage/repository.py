@@ -189,20 +189,33 @@ def validate_transit_key_store(store: Any) -> dict[str, Any]:
         raise TransitKeyStoreValidationError()
 
     identities: set[tuple[str, str]] = set()
-    required = {"key_name", "owner_email", "key_usage", "encrypted_key_material_b64"}
     for record in store["keys"]:
-        if not isinstance(record, dict) or set(record) != required:
+        if not isinstance(record, dict):
             raise TransitKeyStoreValidationError()
-        if not all(isinstance(record[field], str) and record[field] for field in required):
+        common = {"key_name", "owner_email", "key_usage"}
+        if not common.issubset(record) or not all(isinstance(record[field], str) and record[field] for field in common):
             raise TransitKeyStoreValidationError()
-        if record["key_usage"] != "ENCRYPT_DECRYPT":
-            raise TransitKeyStoreValidationError()
+
         try:
-            envelope = b64_decode(record["encrypted_key_material_b64"])
-        except MetadataValidationError as exc:
+            if record["key_usage"] == "ENCRYPT_DECRYPT":
+                if set(record) != common | {"encrypted_key_material_b64"}:
+                    raise TransitKeyStoreValidationError()
+                envelope = b64_decode(record["encrypted_key_material_b64"])
+                if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
+                    raise TransitKeyStoreValidationError()
+            elif record["key_usage"] == "SIGN_VERIFY":
+                signing_fields = {"signing_algorithm", "encrypted_private_key_b64", "public_key_b64"}
+                if set(record) != common | signing_fields or record["signing_algorithm"] != "ED25519":
+                    raise TransitKeyStoreValidationError()
+                envelope = b64_decode(record["encrypted_private_key_b64"])
+                public_key = b64_decode(record["public_key_b64"])
+                if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN or len(public_key) != DEK_LEN:
+                    raise TransitKeyStoreValidationError()
+            else:
+                raise TransitKeyStoreValidationError()
+        except (KeyError, MetadataValidationError) as exc:
             raise TransitKeyStoreValidationError() from exc
-        if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
-            raise TransitKeyStoreValidationError()
+
         identity = (record["owner_email"], record["key_name"])
         if identity in identities:
             raise TransitKeyStoreValidationError()

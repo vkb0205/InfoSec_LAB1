@@ -13,8 +13,8 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - DEK-wrapped, owner-bound Transit AES key creation, listing, and revocation
 - Transit AES-GCM encryption and authenticated decryption
 - Transit named-key ownership enforcement with denied-access logging
+- Ed25519 signing and verification with DEK-wrapped private keys
 - Encrypted KV secret storage (future feature)
-- Signing and verification service (future feature)
 
 ## Setup
 
@@ -116,6 +116,16 @@ Only the authenticated owner may encrypt or decrypt with a named key.
 Inaccessible and missing keys return the same `PERMISSION_DENIED` error before
 the DEK or AES operation is accessed. Each denial appends only the requester
 email, denied key name, and event type to `data/logs/access_denied.jsonl`.
+
+### Transit signing and verification
+
+`create_signing_key` creates an Ed25519 key with `SIGN_VERIFY` usage and stores
+only its DEK-wrapped private key and public verification key. `sign` and
+`verify` require strict base64 input and an explicit `RAW` or `DIGEST` message
+type. `RAW` is SHA-256 hashed by the service; `DIGEST` must contain exactly 32 bytes.
+Verification returns a structured `signature_valid` result, including `false`
+for altered messages, cross-key signatures, and malformed signatures. Only the
+key owner may sign or verify.
 
 ## Test
 

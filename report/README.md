@@ -81,3 +81,21 @@ Current Feature 0.1 suite covers initialization contracts, no-plaintext persiste
   encryption/decryption.
 - Every denied attempt writes a JSON-lines record containing the event type,
   requester email, and denied key name to `data/logs/access_denied.jsonl`.
+
+## Feature 2.4 — Transit Sign and Verify
+
+- `create_signing_key` supports the assignment's Ed25519 option and stores
+  `key_usage = "SIGN_VERIFY"` plus `signing_algorithm = "ED25519"`.
+- The signing algorithm and `RAW`/`DIGEST` message type are mandatory request
+  fields; the service does not silently choose either value.
+- The 32-byte private key is AES-256-GCM wrapped with the in-memory DEK; its
+  owner, name, usage, and algorithm are authenticated as associated data.
+- The public key is stored separately and used internally for verification.
+  Neither key is returned by create, list, sign, or verify responses.
+- For `RAW`, the service signs a SHA-256 digest of the decoded message. For
+  `DIGEST`, the caller's decoded input must be exactly 32 bytes.
+- Verification returns `{key_name, signature_valid, signing_algorithm}` and
+  reports `false` for tampered messages, cross-key signatures, and malformed
+  signatures.
+- Signing and verification reject wrong key usage, unsupported or mismatched
+  algorithms, missing/revoked keys, and non-owner access.

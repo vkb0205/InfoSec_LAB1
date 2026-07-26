@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import secrets
 from pathlib import Path
 from typing import Any, Callable
 
-from cryptography.exceptions import InvalidTag
+from cryptography.exceptions import InvalidSignature, InvalidTag
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from src.crypto_utils import (
@@ -24,13 +27,17 @@ from src.errors import (
     InvalidCiphertextError,
     InvalidInputError,
     InvalidKeyUsageError,
+    InvalidSigningAlgorithmError,
     KeyNotFoundError,
     PermissionDeniedError,
+    UnauthenticatedError,
     VaultLockedError,
 )
 from src.storage.repository import TransitKeyRepository
 
 KEY_USAGE = "ENCRYPT_DECRYPT"
+SIGNING_KEY_USAGE = "SIGN_VERIFY"
+SIGNING_ALGORITHM = "ED25519"
 DEFAULT_ACCESS_LOG_PATH = Path(__file__).resolve().parents[2] / "data/logs/access_denied.jsonl"
 
 
@@ -53,7 +60,7 @@ class TransitService:
 
     def _require_authenticated(self, token: str) -> str:
         if self._auth_validator is None:
-            return token
+            raise UnauthenticatedError()
         return self._auth_validator(token)
 
     def create_key(self, token: str, key_name: str) -> Any:
@@ -104,9 +111,17 @@ class TransitService:
             raise InvalidInputError()
 
     @staticmethod
-    def _key_aad(owner_email: str, key_name: str) -> bytes:
+    def _key_aad(
+        owner_email: str,
+        key_name: str,
+        key_usage: str = KEY_USAGE,
+        signing_algorithm: str | None = None,
+    ) -> bytes:
+        metadata = {"key_name": key_name, "key_usage": key_usage, "owner_email": owner_email}
+        if signing_algorithm is not None:
+            metadata["signing_algorithm"] = signing_algorithm
         return json.dumps(
-            {"key_name": key_name, "key_usage": KEY_USAGE, "owner_email": owner_email},
+            metadata,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
@@ -158,12 +173,7 @@ class TransitService:
         return b64_encode(plaintext)
 
     def _load_encryption_key(self, owner_email: str, key_name: str) -> bytes:
-        try:
-            record = self._repository.get_key(owner_email, key_name)
-        except KeyNotFoundError:
-            self._deny_access(owner_email, key_name)
-        if record["owner_email"] != owner_email:
-            self._deny_access(owner_email, key_name)
+        record = self._get_owned_key(owner_email, key_name)
         if record["key_usage"] != KEY_USAGE:
             raise InvalidKeyUsageError()
         try:
@@ -178,6 +188,15 @@ class TransitService:
         if len(key) != DEK_LEN:
             raise DecryptionFailedError()
         return key
+
+    def _get_owned_key(self, owner_email: str, key_name: str) -> dict[str, Any]:
+        try:
+            record = self._repository.get_key(owner_email, key_name)
+        except KeyNotFoundError:
+            self._deny_access(owner_email, key_name)
+        if record["owner_email"] != owner_email:
+            self._deny_access(owner_email, key_name)
+        return record
 
     def _deny_access(self, requester_email: str, key_name: str) -> None:
         entry = json.dumps(
@@ -201,23 +220,148 @@ class TransitService:
     def _ciphertext_aad(key_name: str) -> bytes:
         return f"mini-vault:transit:v1:{key_name}".encode("utf-8")
 
-    def create_signing_key(self, token: str, key_name: str) -> Any:
+    def create_signing_key(
+        self,
+        token: str,
+        key_name: str,
+        signing_algorithm: str | None = None,
+    ) -> Any:
         self._require_unlocked()
         identity = self._require_authenticated(token)
         if self._downstream is not None:
-            return self._downstream("create_signing_key", identity, key_name)
-        raise NotImplementedError("Transit signing key creation is out of scope for Feature 0.1")
+            return self._downstream("create_signing_key", identity, key_name, signing_algorithm)
+        self._validate_key_name(key_name)
+        if signing_algorithm != SIGNING_ALGORITHM:
+            raise InvalidSigningAlgorithmError()
 
-    def sign(self, token: str, key_name: str, message_b64: str) -> Any:
-        self._require_unlocked()
-        identity = self._require_authenticated(token)
-        if self._downstream is not None:
-            return self._downstream("sign", identity, key_name, message_b64)
-        raise NotImplementedError("Transit signing is out of scope for Feature 0.1")
+        private_key = Ed25519PrivateKey.generate()
+        private_bytes = private_key.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        public_bytes = private_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        nonce = random_nonce()
+        encrypted = AESGCM(self._vault.get_dek()).encrypt(
+            nonce,
+            private_bytes,
+            self._key_aad(identity, key_name, SIGNING_KEY_USAGE, signing_algorithm),
+        )
+        self._repository.create_key({
+            "key_name": key_name,
+            "owner_email": identity,
+            "key_usage": SIGNING_KEY_USAGE,
+            "signing_algorithm": signing_algorithm,
+            "encrypted_private_key_b64": b64_encode(nonce + encrypted),
+            "public_key_b64": b64_encode(public_bytes),
+        })
+        return {
+            "key_name": key_name,
+            "key_usage": SIGNING_KEY_USAGE,
+            "signing_algorithm": signing_algorithm,
+        }
 
-    def verify(self, token: str, key_name: str, message_b64: str, signature: str) -> Any:
+    def sign(
+        self,
+        token: str,
+        key_name: str,
+        message_b64: str,
+        message_type: str | None = None,
+    ) -> Any:
         self._require_unlocked()
         identity = self._require_authenticated(token)
         if self._downstream is not None:
-            return self._downstream("verify", identity, key_name, message_b64, signature)
-        raise NotImplementedError("Transit verification is out of scope for Feature 0.1")
+            return self._downstream("sign", identity, key_name, message_b64, message_type)
+        self._validate_key_name(key_name)
+        record = self._get_signing_record(identity, key_name)
+        message = self._signing_input(message_b64, message_type)
+        private_key = self._load_private_key(record)
+        return {
+            "signature_b64": b64_encode(private_key.sign(message)),
+            "key_name": key_name,
+            "signing_algorithm": record["signing_algorithm"],
+        }
+
+    def verify(
+        self,
+        token: str,
+        key_name: str,
+        message_b64: str,
+        message_type: str | None = None,
+        signature_b64: str | None = None,
+        signing_algorithm: str | None = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            return self._downstream(
+                "verify",
+                identity,
+                key_name,
+                message_b64,
+                message_type,
+                signature_b64,
+                signing_algorithm,
+            )
+        self._validate_key_name(key_name)
+        record = self._get_signing_record(identity, key_name)
+        if signing_algorithm is not None and signing_algorithm != record["signing_algorithm"]:
+            raise InvalidSigningAlgorithmError()
+        message = self._signing_input(message_b64, message_type)
+        result = {
+            "key_name": key_name,
+            "signature_valid": False,
+            "signing_algorithm": record["signing_algorithm"],
+        }
+        try:
+            signature_bytes = b64_decode(signature_b64)
+            if len(signature_bytes) != 64:
+                return result
+            public_bytes = b64_decode(record["public_key_b64"])
+            Ed25519PublicKey.from_public_bytes(public_bytes).verify(signature_bytes, message)
+        except (MetadataValidationError, InvalidSignature, ValueError):
+            return result
+        result["signature_valid"] = True
+        return result
+
+    def _get_signing_record(self, owner_email: str, key_name: str) -> dict[str, Any]:
+        record = self._get_owned_key(owner_email, key_name)
+        if record["key_usage"] != SIGNING_KEY_USAGE:
+            raise InvalidKeyUsageError()
+        if record["signing_algorithm"] != SIGNING_ALGORITHM:
+            raise InvalidSigningAlgorithmError()
+        return record
+
+    def _load_private_key(self, record: dict[str, Any]) -> Ed25519PrivateKey:
+        try:
+            envelope = b64_decode(record["encrypted_private_key_b64"])
+            private_bytes = AESGCM(self._vault.get_dek()).decrypt(
+                envelope[:NONCE_LEN],
+                envelope[NONCE_LEN:],
+                self._key_aad(
+                    record["owner_email"],
+                    record["key_name"],
+                    record["key_usage"],
+                    record["signing_algorithm"],
+                ),
+            )
+            return Ed25519PrivateKey.from_private_bytes(private_bytes)
+        except (MetadataValidationError, InvalidTag, ValueError) as exc:
+            raise DecryptionFailedError() from exc
+
+    @staticmethod
+    def _signing_input(message_b64: str, message_type: str | None) -> bytes:
+        if message_type not in {"RAW", "DIGEST"}:
+            raise InvalidInputError()
+        try:
+            message = b64_decode(message_b64)
+        except MetadataValidationError as exc:
+            raise InvalidInputError() from exc
+        if message_type == "RAW":
+            return hashlib.sha256(message).digest()
+        if len(message) == 32:
+            return message
+        raise InvalidInputError()
