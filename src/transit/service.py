@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from pathlib import Path
 from typing import Any, Callable
 
 from cryptography.exceptions import InvalidTag
@@ -23,11 +24,14 @@ from src.errors import (
     InvalidCiphertextError,
     InvalidInputError,
     InvalidKeyUsageError,
+    KeyNotFoundError,
+    PermissionDeniedError,
     VaultLockedError,
 )
 from src.storage.repository import TransitKeyRepository
 
 KEY_USAGE = "ENCRYPT_DECRYPT"
+DEFAULT_ACCESS_LOG_PATH = Path(__file__).resolve().parents[2] / "data/logs/access_denied.jsonl"
 
 
 class TransitService:
@@ -35,11 +39,13 @@ class TransitService:
 
     def __init__(self, vault: Any, downstream: Callable[..., Any] | None = None,
                  auth_validator: Callable[[str], str] | None = None,
-                 repository: TransitKeyRepository | None = None) -> None:
+                 repository: TransitKeyRepository | None = None,
+                 access_log_path: str | Path | None = None) -> None:
         self._vault = vault
         self._downstream = downstream
         self._auth_validator = auth_validator
         self._repository = repository if repository is not None else TransitKeyRepository()
+        self._access_log_path = Path(access_log_path) if access_log_path is not None else DEFAULT_ACCESS_LOG_PATH
 
     def _require_unlocked(self) -> None:
         if self._vault.is_locked():
@@ -152,7 +158,12 @@ class TransitService:
         return b64_encode(plaintext)
 
     def _load_encryption_key(self, owner_email: str, key_name: str) -> bytes:
-        record = self._repository.get_key(owner_email, key_name)
+        try:
+            record = self._repository.get_key(owner_email, key_name)
+        except KeyNotFoundError:
+            self._deny_access(owner_email, key_name)
+        if record["owner_email"] != owner_email:
+            self._deny_access(owner_email, key_name)
         if record["key_usage"] != KEY_USAGE:
             raise InvalidKeyUsageError()
         try:
@@ -167,6 +178,24 @@ class TransitService:
         if len(key) != DEK_LEN:
             raise DecryptionFailedError()
         return key
+
+    def _deny_access(self, requester_email: str, key_name: str) -> None:
+        entry = json.dumps(
+            {
+                "event": "TRANSIT_PERMISSION_DENIED",
+                "requester_email": requester_email,
+                "key_name": key_name,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        try:
+            self._access_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._access_log_path.open("a", encoding="utf-8") as log:
+                log.write(entry + "\n")
+        except OSError:
+            pass
+        raise PermissionDeniedError()
 
     @staticmethod
     def _ciphertext_aad(key_name: str) -> bytes:

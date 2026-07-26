@@ -70,3 +70,14 @@ Current Feature 0.1 suite covers initialization contracts, no-plaintext persiste
 - Malformed or truncated envelopes, revoked or unknown keys, wrong key usage,
   and GCM authentication failures are rejected without returning plaintext or
   key material.
+
+## Feature 2.3 — Transit Named-Key Access Control
+
+- Session validation supplies the canonical requester email before key lookup.
+- Encrypt and decrypt load keys only from that owner's namespace.
+- Foreign, missing, and revoked keys produce the same `PERMISSION_DENIED`
+  response, avoiding key-existence disclosure.
+- Denial happens before DEK access, key unwrapping, or client-data
+  encryption/decryption.
+- Every denied attempt writes a JSON-lines record containing the event type,
+  requester email, and denied key name to `data/logs/access_denied.jsonl`.

@@ -13,6 +13,7 @@ KEY_NOT_FOUND = "KEY_NOT_FOUND"
 INVALID_CIPHERTEXT = "INVALID_CIPHERTEXT"
 DECRYPTION_FAILED = "DECRYPTION_FAILED"
 INVALID_KEY_USAGE = "INVALID_KEY_USAGE"
+PERMISSION_DENIED = "PERMISSION_DENIED"
 
 
 class VaultError(Exception):
@@ -74,3 +75,7 @@ class DecryptionFailedError(VaultError):
 
 class InvalidKeyUsageError(VaultError):
     code = INVALID_KEY_USAGE
+
+
+class PermissionDeniedError(VaultError):
+    code = PERMISSION_DENIED

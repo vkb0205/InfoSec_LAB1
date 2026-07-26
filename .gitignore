@@ -6,6 +6,7 @@ data/users.json
 data/.users.json.*.tmp
 data/transit_keys.json
 data/.transit_keys.json.*.tmp
+data/logs/*.jsonl
 # Authentication records contain password-verification hashes; never commit them.
 data/users*.json
 

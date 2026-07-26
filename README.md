@@ -12,6 +12,7 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - Process-local, 30-minute session token authentication
 - DEK-wrapped, owner-bound Transit AES key creation, listing, and revocation
 - Transit AES-GCM encryption and authenticated decryption
+- Transit named-key ownership enforcement with denied-access logging
 - Encrypted KV secret storage (future feature)
 - Signing and verification service (future feature)
 
@@ -108,6 +109,13 @@ usage, and operation status—never key material.
 reads the key name from that envelope, verifies the owner and key usage, and
 returns base64 plaintext only after AES-GCM authentication succeeds. Malformed
 input, revoked keys, wrong key usage, and modified ciphertext are rejected.
+
+### Transit access control
+
+Only the authenticated owner may encrypt or decrypt with a named key.
+Inaccessible and missing keys return the same `PERMISSION_DENIED` error before
+the DEK or AES operation is accessed. Each denial appends only the requester
+email, denied key name, and event type to `data/logs/access_denied.jsonl`.
 
 ## Test
 

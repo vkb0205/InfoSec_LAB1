@@ -9,7 +9,7 @@ from src.errors import (
     InvalidCiphertextError,
     InvalidInputError,
     InvalidKeyUsageError,
-    KeyNotFoundError,
+    PermissionDeniedError,
 )
 from src.storage.repository import TransitKeyRepository
 from src.transit.service import TransitService
@@ -97,9 +97,9 @@ def test_invalid_plaintext_base64_and_revoked_keys_are_rejected(tmp_path):
 
     ciphertext = transit.encrypt("alice-token", "application", "")
     transit.revoke_key("alice-token", "application")
-    with pytest.raises(KeyNotFoundError):
+    with pytest.raises(PermissionDeniedError):
         transit.encrypt("alice-token", "application", "")
-    with pytest.raises(KeyNotFoundError):
+    with pytest.raises(PermissionDeniedError):
         transit.decrypt("alice-token", ciphertext)
 
 
@@ -108,9 +108,9 @@ def test_another_owner_cannot_use_the_named_key(tmp_path):
     transit.create_key("alice-token", "application")
     ciphertext = transit.encrypt("alice-token", "application", "")
 
-    with pytest.raises(KeyNotFoundError):
+    with pytest.raises(PermissionDeniedError):
         transit.encrypt("bob-token", "application", "")
-    with pytest.raises(KeyNotFoundError):
+    with pytest.raises(PermissionDeniedError):
         transit.decrypt("bob-token", ciphertext)
 
 
