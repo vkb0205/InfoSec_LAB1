@@ -15,7 +15,7 @@ from src.storage.repository import MetadataRepository, UserRepository
 
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:  # noqa: D401 - argparse override
-        print("INVALID_INPUT")
+        print("")
         raise SystemExit(2)
 
 
