@@ -10,5 +10,6 @@ class Vault:
 def test_transit_preserves_lock_precedence_and_propagates_identity():
     calls = []
     with pytest.raises(VaultLockedError): TransitService(Vault(True), lambda *v: calls.append(v), lambda t: (_ for _ in ()).throw(AssertionError())).list_keys("bad")
+    with pytest.raises(UnauthenticatedError): TransitService(Vault()).list_keys("token")
     with pytest.raises(UnauthenticatedError): TransitService(Vault(), lambda *v: calls.append(v), lambda t: (_ for _ in ()).throw(UnauthenticatedError())).list_keys("bad")
     assert TransitService(Vault(), lambda *v: v, lambda t: "user@example.com").list_keys("token") == ("list_keys", "user@example.com")
