@@ -4,11 +4,14 @@
 
 Create vault metadata, wrap the DEK with the master passphrase, stay locked by default, unlock only with the correct passphrase, and gate KV/Transit while locked.
 
+**Report note (status + restart):** `src/docs/report.md`
+
 ## Modules
 
 | Module | Role |
 |--------|------|
-| `main.py` | CLI: `init` / `unlock` / `status` |
+| `main.py` | CLI: `init` / `unlock` / `status` / `serve` |
+| `src/api/app.py` | REST: `GET /v1/status`, `POST /v1/init`, `POST /v1/unlock` |
 | `src/core/vault.py` | State machine: init, unlock, `get_dek` |
 | `src/crypto_utils.py` | Passphrase policy, Argon2id, AES-GCM wrap/unwrap, metadata |
 | `src/storage/repository.py` | Create-only `vault_metadata.json` |
@@ -284,11 +287,29 @@ main.main()
 
 ```
 main.main()
-  └─ _status(vault)
+  └─ vault_status(vault)                 # src/api/app.py (shared with REST)
        ├─ Vault.is_initialized() → MetadataRepository.exists()
        └─ Vault.is_locked()      → (_dek is None)
   # prints: uninitialized | locked | unlocked
 ```
+
+### REST (`serve`) — same Vault, long-lived process
+
+```
+main.main() serve
+  └─ create_app(vault=same Vault instance)
+  └─ uvicorn.run(...)                    # process stays up
+
+Client                          Server (one Vault in app.state)
+GET  /v1/status            →    vault_status(vault) → {"status": ...}
+POST /v1/init  {passphrase}→    Vault.initialize → {"result":"initialized","status":"locked"}
+POST /v1/unlock {passphrase}→   Vault.unlock → {"status":"unlocked"}
+                                # later GET /status still unlocked (same process)
+VaultError                 →    {"code":"UNLOCK_FAILED"|...}  (no DEK, no passphrase echo)
+```
+
+Why REST matters for status: CLI one-shot exits after unlock → DEK gone.  
+Server keeps `_dek` in RAM across HTTP calls until process restart → locked again.
 
 ### Protected ops (gate only in 0.1)
 

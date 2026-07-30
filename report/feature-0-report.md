@@ -1,5 +1,7 @@
 # Mini Vault Feature 0 Report: Initialization/Unlock and User Authentication
 
+> **Canonical full write-up:** [`report/report.md`](report.md) (Feature 0.1 and 0.2).
+
 ## Scope
 
 This report summarizes the implemented Feature 0.1 and Feature 0.2 security foundations for Mini Vault:
@@ -53,6 +55,12 @@ The vault follows a conservative state model:
 - Successful unlock stores the DEK only in memory for the current process.
 - Restarting the process always loses unlocked state.
 
+**Status is not stored on disk.** There is no `status` field in `vault_metadata.json`. Locked vs unlocked is derived at runtime from whether the current process holds a plaintext DEK (`Vault._dek`).
+
+**REST server (`python main.py serve`):** one long-lived process keeps a single `Vault` in `app.state.vault`. After `POST /v1/unlock`, later `GET /v1/status` remains `unlocked` until that process exits. **Every server restart** constructs a new `Vault` with `_dek = None`, so the vault is **automatically locked again**; the operator must unlock with the Master Passphrase. Stopping the server (Ctrl+C), crash, or reboot has the same effect. This is process-lifetime security, not a persisted lock flag.
+
+Detail notes: `src/docs/report.md`, flow: `src/docs/flow_ft_0.md`.
+
 ### Error Handling
 
 Feature 0.1 exposes stable public error codes only:
@@ -84,9 +92,10 @@ Feature 0.2 is implemented primarily in:
 - `src/auth/service.py`
 - `src/storage/repository.py`
 - `src/errors.py`
-- `main.py`
+- `main.py` (CLI `register` / `login`; `serve` holds shared `AuthService`)
+- `src/api/app.py` (REST register / login / session)
 
-Supporting behavior is documented in `specs/002-user-auth/`.
+Flow notes: `src/docs/flow_ft_0_2.md`.
 
 ### Registration
 
@@ -153,7 +162,7 @@ Feature 0.2 preserves the Feature 0.1 boundary. Protected KV and Transit operati
 
 ---
 
-## CLI Summary
+## CLI and REST Summary
 
 The CLI supports prompt-based operations:
 
@@ -163,9 +172,12 @@ python main.py status
 python main.py unlock
 python main.py register
 python main.py login
+python main.py serve
 ```
 
 Sensitive inputs are accepted with `getpass` prompts rather than command-line arguments. Successful registration prints `registered`. Successful login prints a single session token. Expected failures print only public error codes.
+
+REST (`serve`) exposes the same Feature 0.1 and 0.2 operations over HTTP so a single process keeps vault unlock state and session tokens across client calls. Restarting the server locks the vault again and invalidates all sessions. See README REST table and `src/docs/flow_ft_0_2.md`.
 
 ---
 

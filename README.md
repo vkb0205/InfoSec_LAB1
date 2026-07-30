@@ -7,6 +7,7 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - Vault initialization and unlock using a strong master passphrase
 - Encrypted vault metadata with Argon2id and AES-256-GCM wrapped DEK
 - Runtime locked/unlocked vault state that resets to locked after process restart
+- CLI and REST (FastAPI) for Feature 0.1 — long-lived server keeps unlock across requests
 - Locked-vault gates for future KV and Transit operations
 - User registration and Argon2-protected login
 - Process-local, 30-minute session token authentication
@@ -40,6 +41,7 @@ python main.py init
 python main.py unlock
 python main.py register
 python main.py login
+python main.py serve
 ```
 
 ### `status`
@@ -81,6 +83,37 @@ python main.py unlock
 
 A correct passphrase prints `unlocked`. Expected failures print only a stable public error code such as `UNLOCK_FAILED`, `INVALID_INPUT`, or `ALREADY_INITIALIZED`.
 
+### REST API (Feature 0.1 + 0.2)
+
+Long-lived HTTP server. One in-process `Vault` + one `AuthService` — unlock and session tokens survive across requests until the server process exits (then vault locked again; sessions wiped).
+
+```bash
+python main.py serve
+# optional: python main.py serve --host 127.0.0.1 --port 8000
+# or: uvicorn src.api.app:app --host 127.0.0.1 --port 8000
+```
+
+| Method | Path | Body / header | Success |
+|--------|------|---------------|---------|
+| `GET` | `/v1/status` | — | `{"status":"uninitialized"\|"locked"\|"unlocked"}` |
+| `POST` | `/v1/init` | `{"passphrase":"..."}` | `{"result":"initialized","status":"locked"}` |
+| `POST` | `/v1/unlock` | `{"passphrase":"..."}` | `{"status":"unlocked"}` |
+| `POST` | `/v1/auth/register` | `{"email","passphrase","confirmation"}` | `{"result":"registered"}` |
+| `POST` | `/v1/auth/login` | `{"email","passphrase"}` | `{"token":"..."}` |
+| `GET` | `/v1/auth/session` | `Authorization: Bearer <token>` | `{"email":"..."}` |
+
+Errors return only a public code, e.g. `{"code":"UNLOCK_FAILED"}`. Passphrases only in JSON body. DEK/KEK/password hashes never in responses.
+
+Example (PowerShell: use `curl.exe` or `Invoke-RestMethod`):
+
+```bash
+curl.exe -s http://127.0.0.1:8000/v1/status
+curl.exe -s -X POST http://127.0.0.1:8000/v1/unlock -H "Content-Type: application/json" -d "{\"passphrase\":\"Str0ng!Passphrase123\"}"
+curl.exe -s -X POST http://127.0.0.1:8000/v1/auth/register -H "Content-Type: application/json" -d "{\"email\":\"user@example.com\",\"passphrase\":\"Str0ng!Passphrase123\",\"confirmation\":\"Str0ng!Passphrase123\"}"
+curl.exe -s -X POST http://127.0.0.1:8000/v1/auth/login -H "Content-Type: application/json" -d "{\"email\":\"user@example.com\",\"passphrase\":\"Str0ng!Passphrase123\"}"
+curl.exe -s http://127.0.0.1:8000/v1/auth/session -H "Authorization: Bearer <token-from-login>"
+```
+
 ### `register` and `login`
 
 Register an account with a canonical email and a strong passphrase. `register` prompts for the passphrase and confirmation and prints `registered` when successful. `login` prompts for the email and passphrase and prints one opaque session token on success. Passphrases must never be command-line arguments.
@@ -103,13 +136,14 @@ pytest
 Or run only Feature 0.1 tests:
 
 ```bash
-pytest tests/test_vault_initialization.py tests/test_repository_create_only.py tests/test_vault_unlock.py tests/test_vault_unlock_failures.py tests/test_vault_kdf_bounds.py tests/test_cli_init_unlock.py tests/test_locked_kv_gate.py tests/test_locked_transit_gate.py
+pytest tests/test_vault_initialization.py tests/test_repository_create_only.py tests/test_vault_unlock.py tests/test_vault_unlock_failures.py tests/test_vault_kdf_bounds.py tests/test_cli_init_unlock.py tests/test_api_vault_0_1.py tests/test_locked_kv_gate.py tests/test_locked_transit_gate.py
 ```
 
 ## Project Structure
 
 ```text
 src/core/       # Master passphrase, init/unlock, DEK management
+src/api/        # FastAPI REST adapter (Feature 0.1)
 src/auth/       # Register/login, session token, account lockout
 src/kv/         # Secure Storage / KV Engine
 src/transit/    # Encryption, decryption, signing, verification as a service
