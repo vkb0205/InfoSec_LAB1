@@ -23,7 +23,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(prog="mini-vault", add_help=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init")
+    subparsers.add_parser("init-shamir")
     subparsers.add_parser("unlock")
+    subparsers.add_parser("unlock-shamir")
     subparsers.add_parser("status")
     subparsers.add_parser("register")
     subparsers.add_parser("login")
@@ -57,9 +59,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("locked")
             return 0
 
+        if args.command == "init-shamir":
+            try:
+                total_shares = int(input("Total Shares (N): "))
+                threshold = int(input("Threshold (K): "))
+            except (TypeError, ValueError) as exc:
+                raise InvalidInputError() from exc
+            shares = vault.initialize_shamir(threshold, total_shares)
+            print("initialized")
+            for index, share in enumerate(shares, start=1):
+                print(f"share-{index}: {share}")
+            print("locked")
+            return 0
+
         if args.command == "unlock":
             passphrase = getpass.getpass("Master Passphrase: ")
             vault.unlock(passphrase)
+            print("unlocked")
+            return 0
+
+        if args.command == "unlock-shamir":
+            config = vault.shamir_config()
+            shares = [
+                getpass.getpass(f"Share {index}: ")
+                for index in range(1, config["threshold"] + 1)
+            ]
+            vault.unlock_with_shares(shares)
             print("unlocked")
             return 0
 
