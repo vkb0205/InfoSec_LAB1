@@ -3,6 +3,13 @@ import time
 import logging
 import os
 
+from src.audit import AuditIntegrityError, AuditLog, DEFAULT_AUDIT_LOG_PATH
+from src.policy import (
+    KV_SECRET,
+    PolicyRepository,
+    canonical_email,
+)
+
 # Cấu hình logging
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(CURRENT_DIR))
@@ -18,33 +25,143 @@ if not kv_logger.handlers:
     kv_logger.addHandler(fh)
 
 class KVEngine:
-    def __init__(self, crypto_engine, storage_backend, auth_module):
+    def __init__(
+        self,
+        crypto_engine,
+        storage_backend,
+        auth_module,
+        policy_repository=None,
+        audit_log_path=None,
+    ):
         self.crypto = crypto_engine
-        self.store = storage_backend 
+        self.store = storage_backend
         self.auth = auth_module
+        self.policies = policy_repository if policy_repository is not None else PolicyRepository()
+        self.audit_log = AuditLog(audit_log_path or DEFAULT_AUDIT_LOG_PATH)
 
     def _log_denied(self, operation: str, path: str, caller: str, owner: str):
         msg = f"ACCESS DENIED | Op: {operation} | Path: {path} | Caller: {caller} | Owner: {owner}"
         kv_logger.warning(msg)
+        try:
+            self.audit_log.append({
+                "event": "KV_PERMISSION_DENIED",
+                "operation": operation,
+                "path": path,
+                "requester_email": caller,
+                "owner_email": owner,
+            })
+        except (AuditIntegrityError, OSError, ValueError):
+            pass
 
     def _verify_path_rule(self, path: str) -> str:
+        if not isinstance(path, str):
+            raise ValueError("INVALID_INPUT")
         parts = path.split('/')
         if len(parts) < 3 or parts[0] != 'secret':
             raise ValueError("Định dạng path không hợp lệ. Phải tuân thủ: 'secret/<email>/...'")
         return parts[1]
 
     def _authorize(self, operation: str, path: str, token: str) -> str:
-        owner_email = self._verify_path_rule(path)
         try:
             caller_email = self.auth.verify_token(token)
         except Exception:
             raise PermissionError("UNAUTHENTICATED")
+        owner_email = self._verify_path_rule(path)
 
-        if caller_email != owner_email:
+        if caller_email != owner_email and not self.policies.allows(
+            KV_SECRET,
+            owner_email,
+            path,
+            caller_email,
+            operation,
+        ):
             self._log_denied(operation, path, caller_email, owner_email)
             raise PermissionError("PERMISSION_DENIED")
 
         return owner_email
+
+    def _require_owner(self, operation: str, path: str, token: str) -> str:
+        try:
+            caller_email = self.auth.verify_token(token)
+        except Exception:
+            raise PermissionError("UNAUTHENTICATED")
+        owner_email = self._verify_path_rule(path)
+        if caller_email != owner_email:
+            self._log_denied(operation, path, caller_email, owner_email)
+            raise PermissionError("PERMISSION_DENIED")
+        return owner_email
+
+    def grant_access(
+        self,
+        path: str,
+        grantee_email: str,
+        permissions,
+        token: str,
+    ) -> dict:
+        owner_email = self._require_owner("MANAGE_POLICY", path, token)
+        if not self.store.exists(path):
+            raise KeyError("NOT_FOUND")
+        grantee = canonical_email(grantee_email)
+        granted = self.policies.grant(
+            KV_SECRET,
+            owner_email,
+            path,
+            grantee,
+            permissions,
+        )
+        return {
+            "path": path,
+            "grantee_email": grantee,
+            "permissions": granted,
+        }
+
+    def revoke_access(
+        self,
+        path: str,
+        grantee_email: str,
+        token: str,
+        permissions=None,
+    ) -> dict:
+        owner_email = self._require_owner("MANAGE_POLICY", path, token)
+        if not self.store.exists(path):
+            raise KeyError("NOT_FOUND")
+        grantee = canonical_email(grantee_email)
+        remaining = self.policies.revoke(
+            KV_SECRET,
+            owner_email,
+            path,
+            grantee,
+            permissions,
+        )
+        return {
+            "path": path,
+            "grantee_email": grantee,
+            "permissions": remaining,
+        }
+
+    def get_acl(self, path: str, token: str) -> dict:
+        owner_email = self._require_owner("READ_POLICY", path, token)
+        if not self.store.exists(path):
+            raise KeyError("NOT_FOUND")
+        return {
+            "path": path,
+            "owner_email": owner_email,
+            "grants": self.policies.get_acl(KV_SECRET, owner_email, path),
+        }
+
+    def list_shared(self, token: str) -> list[dict]:
+        try:
+            caller_email = self.auth.verify_token(token)
+        except Exception:
+            raise PermissionError("UNAUTHENTICATED")
+        return [
+            {
+                "path": policy["resource_id"],
+                "owner_email": policy["owner_email"],
+                "permissions": policy["permissions"],
+            }
+            for policy in self.policies.list_shared(KV_SECRET, caller_email)
+        ]
 
     # ==========================================
     # API CONTRACT IMPLEMENTATION (VERSIONING)
@@ -119,11 +236,12 @@ class KVEngine:
         return decrypted_bytes.decode('utf-8')
 
     def delete(self, path: str, token: str) -> str:
-        self._authorize("DELETE", path, token)
+        owner_email = self._authorize("DELETE", path, token)
 
         if not self.store.exists(path):
             raise KeyError("NOT_FOUND")
 
         # Xóa vĩnh viễn toàn bộ lịch sử
         self.store.delete(path)
+        self.policies.delete_resource(KV_SECRET, owner_email, path)
         return "DELETED_SUCCESSFULLY"

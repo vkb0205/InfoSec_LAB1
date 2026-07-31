@@ -14,6 +14,11 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - Encrypted KV secret storage with path-ownership ACL (CLI + REST)
 - Transit encryption/decryption service (future feature)
 - Signing and verification service (future feature)
+- DEK-wrapped, owner-bound Transit AES key creation, listing, and revocation
+- Transit AES-GCM encryption and authenticated decryption
+- Transit named-key ownership enforcement with denied-access logging
+- Ed25519 signing and verification with DEK-wrapped private keys
+- Encrypted KV secret storage (future feature)
 
 ## Setup
 
@@ -130,6 +135,39 @@ python main.py login
 ```
 
 Tokens are valid only in the issuing process for 30 minutes. Five consecutive incorrect passphrases lock that account for five minutes; failures print only stable codes such as `INVALID_CREDENTIALS` or `ACCOUNT_LOCKED`. Account records are held in `data/users.json`, which is ignored by Git and contains Argon2 verification hashes and lockout state only—never sessions or plaintext passphrases.
+
+### Transit named keys
+
+`TransitService.create_key`, `list_keys`, and `revoke_key` implement Feature 2.1.
+Duplicate names are rejected per owner with `DUPLICATE_KEY`; different owners
+may use the same name. Named AES-256 keys are wrapped with the vault DEK before
+`data/transit_keys.json` is written. Public results contain only the key name,
+usage, and operation status—never key material.
+
+### Transit encryption and decryption
+
+`TransitService.encrypt` accepts base64 plaintext and returns
+`vault:<key_name>:<base64(nonce+ciphertext+tag)>`. `TransitService.decrypt`
+reads the key name from that envelope, verifies the owner and key usage, and
+returns base64 plaintext only after AES-GCM authentication succeeds. Malformed
+input, revoked keys, wrong key usage, and modified ciphertext are rejected.
+
+### Transit access control
+
+Only the authenticated owner may encrypt or decrypt with a named key.
+Inaccessible and missing keys return the same `PERMISSION_DENIED` error before
+the DEK or AES operation is accessed. Each denial appends only the requester
+email, denied key name, and event type to `data/logs/access_denied.jsonl`.
+
+### Transit signing and verification
+
+`create_signing_key` creates an Ed25519 key with `SIGN_VERIFY` usage and stores
+only its DEK-wrapped private key and public verification key. `sign` and
+`verify` require strict base64 input and an explicit `RAW` or `DIGEST` message
+type. `RAW` is SHA-256 hashed by the service; `DIGEST` must contain exactly 32 bytes.
+Verification returns a structured `signature_valid` result, including `false`
+for altered messages, cross-key signatures, and malformed signatures. Only the
+key owner may sign or verify.
 
 ## Test
 

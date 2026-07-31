@@ -5,16 +5,16 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+import json
 import sys
-from typing import Sequence
+from pathlib import Path
+from typing import Any, Sequence
 
-from src.api.app import vault_status
 from src.core.vault import Vault
 from src.auth.service import AuthService
 from src.errors import AlreadyInitializedError, InvalidInputError, UnlockFailedError, VaultError
 from src.kv.crypto_utils import CryptoEngine
 from src.kv.kv_engine import KVEngine
-from src.kv.storage import KVFileStorage
 from src.storage.repository import MetadataRepository, TransitKeyRepository, UserRepository
 from src.transit.service import TransitService
 
@@ -37,14 +37,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(prog="mini-vault", add_help=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init")
+    subparsers.add_parser("init-shamir")
     subparsers.add_parser("unlock")
+    subparsers.add_parser("unlock-shamir")
     subparsers.add_parser("status")
     subparsers.add_parser("register")
     subparsers.add_parser("login")
     subparsers.add_parser("interactive")
-    serve_parser = subparsers.add_parser("serve")
-    serve_parser.add_argument("--host", default="127.0.0.1")
-    serve_parser.add_argument("--port", type=int, default=8000)
 
     kv_parser = subparsers.add_parser("kv")
     kv_sub = kv_parser.add_subparsers(dest="kv_command", required=True)
@@ -83,15 +82,8 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--key-name", default=None)
     verify_parser.add_argument("--message", default=None)
     verify_parser.add_argument("--signature", default=None)
-    list_keys_parser = transit_sub.add_parser("list-keys")
-    list_keys_parser.add_argument("--token", default=None)
-    revoke_key_parser = transit_sub.add_parser("revoke-key")
-    revoke_key_parser.add_argument("--token", default=None)
-    revoke_key_parser.add_argument("--key-name", default=None)
-    rotate_key_parser = transit_sub.add_parser("rotate-key")
-    rotate_key_parser.add_argument("--token", default=None)
-    rotate_key_parser.add_argument("--key-name", default=None)
 
+    subparsers.add_parser("enable-mfa")
     return parser
 
 
@@ -101,6 +93,49 @@ def _status(vault: Vault) -> str:
     if vault.is_locked():
         return "locked"
     return "unlocked"
+
+
+_DATA_DIR = Path(__file__).resolve().parent / "data"
+_KV_STORE_PATH = _DATA_DIR / "kv_store.json"
+
+
+class _KVFileStorage:
+    def __init__(self, storage_path: Path | None = None) -> None:
+        self.storage_path = storage_path or _KV_STORE_PATH
+
+    def _load(self) -> dict[str, Any]:
+        if not self.storage_path.exists():
+            return {}
+        try:
+            with self.storage_path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                return {}
+            return data
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save(self, store: dict[str, Any]) -> None:
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.storage_path.open("w", encoding="utf-8") as fh:
+            json.dump(store, fh, sort_keys=True, indent=2)
+
+    def get(self, path: str) -> Any:
+        return self._load().get(path)
+
+    def set(self, path: str, record: Any) -> None:
+        store = self._load()
+        store[path] = record
+        self._save(store)
+
+    def exists(self, path: str) -> bool:
+        return path in self._load()
+
+    def delete(self, path: str) -> None:
+        store = self._load()
+        if path in store:
+            del store[path]
+            self._save(store)
 
 
 def _prompt_token() -> str:
@@ -116,7 +151,7 @@ def _prompt_text(prompt_text: str, default: str | None = None) -> str:
 
 def _run_interactive(vault: Vault, auth: AuthService) -> int:
     transit = TransitService(vault, auth.validate_session, TransitKeyRepository())
-    kv_store = KVFileStorage()
+    kv_store = _KVFileStorage()
     kv_engine = None
     token: str | None = None
     current_email: str | None = None
@@ -157,9 +192,6 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
         print("12) transit create-signing-key")
         print("13) transit sign")
         print("14) transit verify")
-        print("15) transit list-keys")
-        print("16) transit revoke-key")
-        print("17) transit rotate-key (bonus)")
         print("0) exit")
         
         if current_email:
@@ -283,26 +315,6 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
                 print(transit.verify(token, key_name, base64.b64encode(message.encode("utf-8")).decode("utf-8"), signature))
                 continue
 
-            if choice == "15":
-                if not ensure_unlocked() or not ensure_session():
-                    continue
-                print(transit.list_keys(token))
-                continue
-
-            if choice == "16":
-                if not ensure_unlocked() or not ensure_session():
-                    continue
-                key_name = _prompt_text("Transit key name to revoke")
-                print(transit.revoke_key(token, key_name))
-                continue
-
-            if choice == "17":
-                if not ensure_unlocked() or not ensure_session():
-                    continue
-                key_name = _prompt_text("Transit key name to rotate")
-                print(transit.rotate_key(token, key_name))
-                continue
-
             print("INVALID_INPUT")
         except (InvalidInputError, AlreadyInitializedError, UnlockFailedError, VaultError) as exc:
             print(exc.code)
@@ -315,7 +327,7 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
 
 
 def _create_kv_engine(vault: Vault, auth: AuthService) -> KVEngine:
-    return KVEngine(CryptoEngine(vault.get_dek()), KVFileStorage(), _AuthTokenValidator(auth))
+    return KVEngine(CryptoEngine(vault.get_dek()), _KVFileStorage(), _AuthTokenValidator(auth))
 
 
 def _get_required_value(name: str, value: str | None) -> str:
@@ -390,17 +402,6 @@ def _run_transit_command(args: argparse.Namespace, vault: Vault, auth: AuthServi
             signature = _get_required_value("signature", args.signature)
             print(transit.verify(token, key_name, base64.b64encode(message.encode("utf-8")).decode("utf-8"), signature))
             return 0
-        if args.transit_command == "list-keys":
-            print(transit.list_keys(token))
-            return 0
-        if args.transit_command == "revoke-key":
-            key_name = _get_required_value("key-name", args.key_name)
-            print(transit.revoke_key(token, key_name))
-            return 0
-        if args.transit_command == "rotate-key":
-            key_name = _get_required_value("key-name", args.key_name)
-            print(transit.rotate_key(token, key_name))
-            return 0
     except PermissionError as exc:
         print(str(exc))
         return 1
@@ -426,7 +427,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         if args.command == "status":
-            print(vault_status(vault))
+            print(_status(vault))
             return 0
 
         if args.command == "init":
@@ -436,9 +437,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("locked")
             return 0
 
+        if args.command == "init-shamir":
+            try:
+                total_shares = int(input("Total Shares (N): "))
+                threshold = int(input("Threshold (K): "))
+            except (TypeError, ValueError) as exc:
+                raise InvalidInputError() from exc
+            shares = vault.initialize_shamir(threshold, total_shares)
+            print("initialized")
+            for index, share in enumerate(shares, start=1):
+                print(f"share-{index}: {share}")
+            print("locked")
+            return 0
+
         if args.command == "unlock":
             passphrase = getpass.getpass("Master Passphrase: ")
             vault.unlock(passphrase)
+            print("unlocked")
+            return 0
+
+        if args.command == "unlock-shamir":
+            config = vault.shamir_config()
+            shares = [
+                getpass.getpass(f"Share {index}: ")
+                for index in range(1, config["threshold"] + 1)
+            ]
+            vault.unlock_with_shares(shares)
             print("unlocked")
             return 0
 
@@ -453,19 +477,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "login":
             email = input("Email: ")
             passphrase = getpass.getpass("Passphrase: ")
-            print(auth.login(email, passphrase))
+            otp = (
+                getpass.getpass("TOTP Code: ")
+                if auth.mfa_required(email)
+                else None
+            )
+            print(auth.login(email, passphrase, otp))
+            return 0
+
+        if args.command == "enable-mfa":
+            email = input("Email: ")
+            passphrase = getpass.getpass("Passphrase: ")
+            enrollment = auth.enable_mfa(email, passphrase)
+            print(f"secret: {enrollment['secret']}")
+            print(f"provisioning_uri: {enrollment['provisioning_uri']}")
             return 0
 
         if args.command == "interactive":
             return _run_interactive(vault, auth)
-
-        if args.command == "serve":
-            import uvicorn
-
-            from src.api.app import create_app
-
-            uvicorn.run(create_app(), host=args.host, port=args.port)
-            return 0
 
         if args.command == "kv":
             return _run_kv_command(args, vault, auth)
@@ -476,7 +505,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (InvalidInputError, AlreadyInitializedError, UnlockFailedError, VaultError) as exc:
         print(exc.code)
         return 1
-
 
     print("INVALID_INPUT")
     return 1
