@@ -31,5 +31,18 @@
     ],
     "latest_version": 1,
     "path": "secret/alice@gmail.com/data"
+  },
+  "secret/vkb0205@gmail.com/demo": {
+    "history": [
+      {
+        "ciphertext_b64": "Rg==",
+        "created_at": 1785482229,
+        "nonce_b64": "T1J/DKq30uZRxTP1",
+        "tag_b64": "w54+ndI0wzRp2hU3X/LCPg==",
+        "version": 1
+      }
+    ],
+    "latest_version": 1,
+    "path": "secret/vkb0205@gmail.com/demo"
   }
 }

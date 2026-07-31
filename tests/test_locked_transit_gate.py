@@ -22,6 +22,7 @@ class LockedVaultStub:
         ("create_key", ("token", "key-name")),
         ("list_keys", ("token",)),
         ("revoke_key", ("token", "key-name")),
+        ("rotate_key", ("token", "key-name")),
         ("encrypt", ("token", "key-name", "cGxhaW50ZXh0")),
         ("decrypt", ("token", "vault:key-name:ciphertext")),
         ("create_signing_key", ("token", "signing-key")),

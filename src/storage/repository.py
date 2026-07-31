@@ -209,15 +209,42 @@ class TransitKeyStoreValidationError(ValueError):
     """Internal validation failure for the transit key store document."""
 
 
+def _validate_transit_version_entry(entry: Any) -> None:
+    if not isinstance(entry, dict):
+        raise TransitKeyStoreValidationError()
+    required = {"encrypted_key_material_b64", "public_key_b64", "created_at"}
+    if set(entry) != required:
+        raise TransitKeyStoreValidationError()
+    if not isinstance(entry["encrypted_key_material_b64"], str) or not entry["encrypted_key_material_b64"]:
+        raise TransitKeyStoreValidationError()
+    if entry["public_key_b64"] is not None and not isinstance(entry["public_key_b64"], str):
+        raise TransitKeyStoreValidationError()
+    if not isinstance(entry["created_at"], str) or not entry["created_at"]:
+        raise TransitKeyStoreValidationError()
+
+
 def validate_transit_key_store(store: Any) -> dict[str, Any]:
     if not isinstance(store, dict) or set(store) != {"schema_version", "keys"}:
         raise TransitKeyStoreValidationError()
     if store["schema_version"] != TRANSIT_KEY_STORE_SCHEMA_VERSION or not isinstance(store["keys"], dict):
         raise TransitKeyStoreValidationError()
+    base_fields = {
+        "name",
+        "owner_email",
+        "key_usage",
+        "algorithm",
+        "encrypted_key_material_b64",
+        "public_key_b64",
+        "created_at",
+    }
+    optional_version_fields = {"latest_version", "versions"}
     for name, key in store["keys"].items():
         if not isinstance(name, str) or not name or not isinstance(key, dict):
             raise TransitKeyStoreValidationError()
-        if set(key) != {"name", "owner_email", "key_usage", "algorithm", "encrypted_key_material_b64", "public_key_b64", "created_at"}:
+        key_fields = set(key)
+        if not base_fields.issubset(key_fields):
+            raise TransitKeyStoreValidationError()
+        if key_fields - base_fields - optional_version_fields:
             raise TransitKeyStoreValidationError()
         if key["name"] != name or not isinstance(key["owner_email"], str) or not key["owner_email"]:
             raise TransitKeyStoreValidationError()
@@ -231,6 +258,20 @@ def validate_transit_key_store(store: Any) -> dict[str, Any]:
             raise TransitKeyStoreValidationError()
         if not isinstance(key["created_at"], str) or not key["created_at"]:
             raise TransitKeyStoreValidationError()
+        if "versions" in key or "latest_version" in key:
+            if "versions" not in key or "latest_version" not in key:
+                raise TransitKeyStoreValidationError()
+            if not isinstance(key["latest_version"], int) or key["latest_version"] < 1:
+                raise TransitKeyStoreValidationError()
+            versions = key["versions"]
+            if not isinstance(versions, dict) or not versions:
+                raise TransitKeyStoreValidationError()
+            for ver_s, entry in versions.items():
+                if not isinstance(ver_s, str) or not ver_s.isdigit() or int(ver_s) < 1:
+                    raise TransitKeyStoreValidationError()
+                _validate_transit_version_entry(entry)
+            if str(key["latest_version"]) not in versions:
+                raise TransitKeyStoreValidationError()
     return store
 
 
@@ -271,6 +312,13 @@ class TransitKeyRepository:
             validate_transit_key_store(store)
         except (KeyError, TransitKeyStoreValidationError) as exc:
             raise InvalidInputError() from exc
+        self._replace(store)
+
+    def delete_key(self, key_name: str) -> None:
+        store = self.read()
+        if key_name not in store["keys"]:
+            raise InvalidInputError()
+        del store["keys"][key_name]
         self._replace(store)
 
     def _replace(self, store: dict[str, Any]) -> None:

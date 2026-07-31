@@ -7,11 +7,11 @@ Mini Vault is a secure secret-management application inspired by HashiCorp Vault
 - Vault initialization and unlock using a strong master passphrase
 - Encrypted vault metadata with Argon2id and AES-256-GCM wrapped DEK
 - Runtime locked/unlocked vault state that resets to locked after process restart
-- CLI and REST (FastAPI) for Feature 0.1 — long-lived server keeps unlock across requests
-- Locked-vault gates for future KV and Transit operations
+- CLI and REST (FastAPI) for Feature 0.1–1 — long-lived server keeps unlock across requests
+- Locked-vault gates for KV and Transit operations
 - User registration and Argon2-protected login
 - Process-local, 30-minute session token authentication
-- Encrypted KV secret storage (future feature)
+- Encrypted KV secret storage with path-ownership ACL (CLI + REST)
 - Transit encryption/decryption service (future feature)
 - Signing and verification service (future feature)
 
@@ -101,8 +101,11 @@ python main.py serve
 | `POST` | `/v1/auth/register` | `{"email","passphrase","confirmation"}` | `{"result":"registered"}` |
 | `POST` | `/v1/auth/login` | `{"email","passphrase"}` | `{"token":"..."}` |
 | `GET` | `/v1/auth/session` | `Authorization: Bearer <token>` | `{"email":"..."}` |
+| `POST` | `/v1/kv/write` | Bearer + `{"path","data"}` | `{"version","created_at","updated_at"}` |
+| `GET` | `/v1/kv/read?path=...` | Bearer; optional `version` | `{"path","data"}` |
+| `DELETE` | `/v1/kv/delete?path=...` | Bearer | `{"result":"DELETED_SUCCESSFULLY"}` |
 
-Errors return only a public code, e.g. `{"code":"UNLOCK_FAILED"}`. Passphrases only in JSON body. DEK/KEK/password hashes never in responses.
+Errors return only a public code, e.g. `{"code":"UNLOCK_FAILED"}`. Passphrases only in JSON body. DEK/KEK/password hashes never in responses. KV paths must be `secret/<email>/...`; token email must match path owner.
 
 Example (PowerShell: use `curl.exe` or `Invoke-RestMethod`):
 
@@ -112,6 +115,9 @@ curl.exe -s -X POST http://127.0.0.1:8000/v1/unlock -H "Content-Type: applicatio
 curl.exe -s -X POST http://127.0.0.1:8000/v1/auth/register -H "Content-Type: application/json" -d "{\"email\":\"user@example.com\",\"passphrase\":\"Str0ng!Passphrase123\",\"confirmation\":\"Str0ng!Passphrase123\"}"
 curl.exe -s -X POST http://127.0.0.1:8000/v1/auth/login -H "Content-Type: application/json" -d "{\"email\":\"user@example.com\",\"passphrase\":\"Str0ng!Passphrase123\"}"
 curl.exe -s http://127.0.0.1:8000/v1/auth/session -H "Authorization: Bearer <token-from-login>"
+curl.exe -s -X POST http://127.0.0.1:8000/v1/kv/write -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d "{\"path\":\"secret/user@example.com/demo\",\"data\":\"my-secret\"}"
+curl.exe -s "http://127.0.0.1:8000/v1/kv/read?path=secret/user@example.com/demo" -H "Authorization: Bearer <token>"
+curl.exe -s -X DELETE "http://127.0.0.1:8000/v1/kv/delete?path=secret/user@example.com/demo" -H "Authorization: Bearer <token>"
 ```
 
 ### `register` and `login`
@@ -143,7 +149,7 @@ pytest tests/test_vault_initialization.py tests/test_repository_create_only.py t
 
 ```text
 src/core/       # Master passphrase, init/unlock, DEK management
-src/api/        # FastAPI REST adapter (Feature 0.1)
+src/api/        # FastAPI REST adapter (Feature 0.1–1)
 src/auth/       # Register/login, session token, account lockout
 src/kv/         # Secure Storage / KV Engine
 src/transit/    # Encryption, decryption, signing, verification as a service
