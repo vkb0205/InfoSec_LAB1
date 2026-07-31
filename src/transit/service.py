@@ -33,6 +33,12 @@ from src.errors import (
     UnauthenticatedError,
     VaultLockedError,
 )
+from src.policy import (
+    TRANSIT_KEY,
+    PolicyRepository,
+    canonical_email,
+    normalize_permissions,
+)
 from src.storage.repository import TransitKeyRepository
 
 KEY_USAGE = "ENCRYPT_DECRYPT"
@@ -47,12 +53,20 @@ class TransitService:
     def __init__(self, vault: Any, downstream: Callable[..., Any] | None = None,
                  auth_validator: Callable[[str], str] | None = None,
                  repository: TransitKeyRepository | None = None,
-                 access_log_path: str | Path | None = None) -> None:
+                 access_log_path: str | Path | None = None,
+                 policy_repository: PolicyRepository | None = None) -> None:
         self._vault = vault
         self._downstream = downstream
         self._auth_validator = auth_validator
         self._repository = repository if repository is not None else TransitKeyRepository()
         self._access_log_path = Path(access_log_path) if access_log_path is not None else DEFAULT_ACCESS_LOG_PATH
+        key_path = getattr(self._repository, "key_path", None)
+        policy_path = Path(key_path).with_name("policies.json") if key_path is not None else None
+        self._policies = (
+            policy_repository
+            if policy_repository is not None
+            else PolicyRepository(policy_path)
+        )
 
     def _require_unlocked(self) -> None:
         if self._vault.is_locked():
@@ -103,7 +117,141 @@ class TransitService:
             return self._downstream("revoke_key", identity, key_name)
         self._validate_key_name(key_name)
         self._repository.delete_key(identity, key_name)
+        self._policies.delete_resource(TRANSIT_KEY, identity, key_name)
         return {"key_name": key_name, "revoked": True}
+
+    def grant_key_access(
+        self,
+        token: str,
+        key_name: str,
+        grantee_email: str,
+        permissions: Any,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            args = ("grant_key_access", identity, key_name, grantee_email, permissions)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        self._validate_key_name(key_name)
+        owner_email = identity if key_owner_email is None else canonical_email(key_owner_email)
+        if owner_email != identity:
+            self._deny_access(identity, key_name)
+        record = self._repository.get_key(owner_email, key_name)
+        grantee = canonical_email(grantee_email)
+        granted = self._policies.grant(
+            TRANSIT_KEY,
+            owner_email,
+            key_name,
+            grantee,
+            normalize_permissions(permissions, self._permissions_for(record)),
+        )
+        return {
+            "key_name": key_name,
+            "owner_email": owner_email,
+            "grantee_email": grantee,
+            "permissions": granted,
+        }
+
+    def revoke_key_access(
+        self,
+        token: str,
+        key_name: str,
+        grantee_email: str,
+        permissions: Any = None,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            args = ("revoke_key_access", identity, key_name, grantee_email, permissions)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        self._validate_key_name(key_name)
+        owner_email = identity if key_owner_email is None else canonical_email(key_owner_email)
+        if owner_email != identity:
+            self._deny_access(identity, key_name)
+        record = self._repository.get_key(owner_email, key_name)
+        grantee = canonical_email(grantee_email)
+        normalized = (
+            None
+            if permissions is None
+            else normalize_permissions(permissions, self._permissions_for(record))
+        )
+        remaining = self._policies.revoke(
+            TRANSIT_KEY,
+            owner_email,
+            key_name,
+            grantee,
+            normalized,
+        )
+        return {
+            "key_name": key_name,
+            "owner_email": owner_email,
+            "grantee_email": grantee,
+            "permissions": remaining,
+        }
+
+    def get_key_acl(
+        self,
+        token: str,
+        key_name: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            args = ("get_key_acl", identity, key_name)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        self._validate_key_name(key_name)
+        owner_email = identity if key_owner_email is None else canonical_email(key_owner_email)
+        if owner_email != identity:
+            self._deny_access(identity, key_name)
+        self._repository.get_key(owner_email, key_name)
+        return {
+            "key_name": key_name,
+            "owner_email": owner_email,
+            "grants": self._policies.get_acl(TRANSIT_KEY, owner_email, key_name),
+        }
+
+    def list_shared_keys(self, token: str) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            return self._downstream("list_shared_keys", identity)
+        shared = []
+        for policy in self._policies.list_shared(TRANSIT_KEY, identity):
+            try:
+                record = self._repository.get_key(
+                    policy["owner_email"],
+                    policy["resource_id"],
+                )
+            except KeyNotFoundError:
+                continue
+            permissions = sorted(
+                set(policy["permissions"]) & self._permissions_for(record)
+            )
+            if permissions:
+                shared.append({
+                    "key_name": record["key_name"],
+                    "owner_email": record["owner_email"],
+                    "key_usage": record["key_usage"],
+                    "permissions": permissions,
+                })
+        return sorted(shared, key=lambda item: (item["owner_email"], item["key_name"]))
+
+    @staticmethod
+    def _permissions_for(record: dict[str, Any]) -> frozenset[str]:
+        if record["key_usage"] == KEY_USAGE:
+            return frozenset({"ENCRYPT", "DECRYPT"})
+        if record["key_usage"] == SIGNING_KEY_USAGE:
+            return frozenset({"SIGN", "VERIFY"})
+        raise InvalidKeyUsageError()
 
     @staticmethod
     def _validate_key_name(key_name: str) -> None:
@@ -126,34 +274,75 @@ class TransitService:
             separators=(",", ":"),
         ).encode("utf-8")
 
-    def encrypt(self, token: str, key_name: str, plaintext_b64: str) -> Any:
+    def encrypt(
+        self,
+        token: str,
+        key_name: str,
+        plaintext_b64: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
         self._require_unlocked()
         identity = self._require_authenticated(token)
         if self._downstream is not None:
-            return self._downstream("encrypt", identity, key_name, plaintext_b64)
-        self._validate_key_name(key_name)
+            args = ("encrypt", identity, key_name, plaintext_b64)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        owner_email, actual_key_name, qualified = self._resolve_key_reference(
+            identity,
+            key_name,
+            key_owner_email,
+        )
+        self._validate_key_name(actual_key_name)
         try:
             plaintext = b64_decode(plaintext_b64)
         except MetadataValidationError as exc:
             raise InvalidInputError() from exc
 
-        key = self._load_encryption_key(identity, key_name)
+        key = self._load_encryption_key(
+            identity,
+            owner_email,
+            actual_key_name,
+            "ENCRYPT",
+        )
         nonce = random_nonce()
-        encrypted = AESGCM(key).encrypt(nonce, plaintext, self._ciphertext_aad(key_name))
-        return f"vault:{key_name}:{b64_encode(nonce + encrypted)}"
+        encrypted = AESGCM(key).encrypt(
+            nonce,
+            plaintext,
+            self._ciphertext_aad(actual_key_name),
+        )
+        identifier = (
+            f"{owner_email}/{actual_key_name}"
+            if qualified
+            else actual_key_name
+        )
+        return f"vault:{identifier}:{b64_encode(nonce + encrypted)}"
 
-    def decrypt(self, token: str, ciphertext: str) -> Any:
+    def decrypt(
+        self,
+        token: str,
+        ciphertext: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
         self._require_unlocked()
         identity = self._require_authenticated(token)
         if self._downstream is not None:
-            return self._downstream("decrypt", identity, ciphertext)
+            args = ("decrypt", identity, ciphertext)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
         if not isinstance(ciphertext, str):
             raise InvalidCiphertextError()
         parts = ciphertext.split(":", 2)
         if len(parts) != 3 or parts[0] != "vault":
             raise InvalidCiphertextError()
-        key_name, encoded = parts[1], parts[2]
+        key_reference, encoded = parts[1], parts[2]
         try:
+            owner_email, key_name, _ = self._resolve_key_reference(
+                identity,
+                key_reference,
+                key_owner_email,
+            )
             self._validate_key_name(key_name)
             envelope = b64_decode(encoded)
         except (InvalidInputError, MetadataValidationError) as exc:
@@ -161,7 +350,12 @@ class TransitService:
         if len(envelope) < NONCE_LEN + GCM_TAG_LEN:
             raise InvalidCiphertextError()
 
-        key = self._load_encryption_key(identity, key_name)
+        key = self._load_encryption_key(
+            identity,
+            owner_email,
+            key_name,
+            "DECRYPT",
+        )
         try:
             plaintext = AESGCM(key).decrypt(
                 envelope[:NONCE_LEN],
@@ -172,8 +366,19 @@ class TransitService:
             raise DecryptionFailedError() from exc
         return b64_encode(plaintext)
 
-    def _load_encryption_key(self, owner_email: str, key_name: str) -> bytes:
-        record = self._get_owned_key(owner_email, key_name)
+    def _load_encryption_key(
+        self,
+        requester_email: str,
+        owner_email: str,
+        key_name: str,
+        permission: str,
+    ) -> bytes:
+        record = self._get_authorized_key(
+            requester_email,
+            owner_email,
+            key_name,
+            permission,
+        )
         if record["key_usage"] != KEY_USAGE:
             raise InvalidKeyUsageError()
         try:
@@ -189,14 +394,69 @@ class TransitService:
             raise DecryptionFailedError()
         return key
 
-    def _get_owned_key(self, owner_email: str, key_name: str) -> dict[str, Any]:
+    def _get_authorized_key(
+        self,
+        requester_email: str,
+        owner_email: str,
+        key_name: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        if requester_email != owner_email and not self._policies.allows(
+            TRANSIT_KEY,
+            owner_email,
+            key_name,
+            requester_email,
+            permission,
+        ):
+            self._deny_access(requester_email, key_name)
         try:
             record = self._repository.get_key(owner_email, key_name)
         except KeyNotFoundError:
-            self._deny_access(owner_email, key_name)
+            self._deny_access(requester_email, key_name)
         if record["owner_email"] != owner_email:
-            self._deny_access(owner_email, key_name)
+            self._deny_access(requester_email, key_name)
         return record
+
+    def _get_owned_key(self, owner_email: str, key_name: str) -> dict[str, Any]:
+        return self._get_authorized_key(
+            owner_email,
+            owner_email,
+            key_name,
+            "ENCRYPT",
+        )
+
+    @staticmethod
+    def _resolve_key_reference(
+        requester_email: str,
+        key_reference: str,
+        key_owner_email: str | None,
+    ) -> tuple[str, str, bool]:
+        if not isinstance(key_reference, str):
+            raise InvalidInputError()
+        embedded_owner: str | None = None
+        key_name = key_reference
+        if "/" in key_reference:
+            possible_owner, possible_key_name = key_reference.split("/", 1)
+            try:
+                embedded_owner = canonical_email(possible_owner)
+            except InvalidInputError:
+                embedded_owner = None
+            else:
+                key_name = possible_key_name
+
+        explicit_owner = (
+            None
+            if key_owner_email is None
+            else canonical_email(key_owner_email)
+        )
+        if (
+            embedded_owner is not None
+            and explicit_owner is not None
+            and embedded_owner != explicit_owner
+        ):
+            raise InvalidInputError()
+        owner_email = embedded_owner or explicit_owner or requester_email
+        return owner_email, key_name, embedded_owner is not None or explicit_owner is not None
 
     def _deny_access(self, requester_email: str, key_name: str) -> None:
         entry = json.dumps(
@@ -270,18 +530,32 @@ class TransitService:
         key_name: str,
         message_b64: str,
         message_type: str | None = None,
+        key_owner_email: str | None = None,
     ) -> Any:
         self._require_unlocked()
         identity = self._require_authenticated(token)
         if self._downstream is not None:
-            return self._downstream("sign", identity, key_name, message_b64, message_type)
-        self._validate_key_name(key_name)
-        record = self._get_signing_record(identity, key_name)
+            args = ("sign", identity, key_name, message_b64, message_type)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        owner_email, actual_key_name, _ = self._resolve_key_reference(
+            identity,
+            key_name,
+            key_owner_email,
+        )
+        self._validate_key_name(actual_key_name)
+        record = self._get_signing_record(
+            identity,
+            owner_email,
+            actual_key_name,
+            "SIGN",
+        )
         message = self._signing_input(message_b64, message_type)
         private_key = self._load_private_key(record)
         return {
             "signature_b64": b64_encode(private_key.sign(message)),
-            "key_name": key_name,
+            "key_name": actual_key_name,
             "signing_algorithm": record["signing_algorithm"],
         }
 
@@ -293,11 +567,12 @@ class TransitService:
         message_type: str | None = None,
         signature_b64: str | None = None,
         signing_algorithm: str | None = None,
+        key_owner_email: str | None = None,
     ) -> Any:
         self._require_unlocked()
         identity = self._require_authenticated(token)
         if self._downstream is not None:
-            return self._downstream(
+            args = (
                 "verify",
                 identity,
                 key_name,
@@ -306,13 +581,26 @@ class TransitService:
                 signature_b64,
                 signing_algorithm,
             )
-        self._validate_key_name(key_name)
-        record = self._get_signing_record(identity, key_name)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        owner_email, actual_key_name, _ = self._resolve_key_reference(
+            identity,
+            key_name,
+            key_owner_email,
+        )
+        self._validate_key_name(actual_key_name)
+        record = self._get_signing_record(
+            identity,
+            owner_email,
+            actual_key_name,
+            "VERIFY",
+        )
         if signing_algorithm is not None and signing_algorithm != record["signing_algorithm"]:
             raise InvalidSigningAlgorithmError()
         message = self._signing_input(message_b64, message_type)
         result = {
-            "key_name": key_name,
+            "key_name": actual_key_name,
             "signature_valid": False,
             "signing_algorithm": record["signing_algorithm"],
         }
@@ -327,8 +615,19 @@ class TransitService:
         result["signature_valid"] = True
         return result
 
-    def _get_signing_record(self, owner_email: str, key_name: str) -> dict[str, Any]:
-        record = self._get_owned_key(owner_email, key_name)
+    def _get_signing_record(
+        self,
+        requester_email: str,
+        owner_email: str,
+        key_name: str,
+        permission: str,
+    ) -> dict[str, Any]:
+        record = self._get_authorized_key(
+            requester_email,
+            owner_email,
+            key_name,
+            permission,
+        )
         if record["key_usage"] != SIGNING_KEY_USAGE:
             raise InvalidKeyUsageError()
         if record["signing_algorithm"] != SIGNING_ALGORITHM:

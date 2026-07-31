@@ -27,6 +27,10 @@ class LockedVaultStub:
         ("create_signing_key", ("token", "signing-key")),
         ("sign", ("token", "signing-key", "bWVzc2FnZQ==")),
         ("verify", ("token", "signing-key", "bWVzc2FnZQ==", "signature")),
+        ("grant_key_access", ("token", "key-name", "user@example.com", ["ENCRYPT"])),
+        ("revoke_key_access", ("token", "key-name", "user@example.com")),
+        ("get_key_acl", ("token", "key-name")),
+        ("list_shared_keys", ("token",)),
     ],
 )
 def test_locked_transit_operations_fail_before_downstream(method, args) -> None:
