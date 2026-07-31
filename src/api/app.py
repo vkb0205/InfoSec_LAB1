@@ -12,8 +12,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, Query, Request
+from fastapi import FastAPI, Header, Query, Request, Depends
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 from src.auth.service import AuthService
@@ -156,26 +157,27 @@ def create_app(
         token = a.login(body.email, body.passphrase)
         return {"token": token}
 
+    security = HTTPBearer()
     @app.get("/v1/auth/session")
     def get_session(
         request: Request,
-        authorization: str | None = Header(default=None),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
     ) -> dict[str, str]:
         """Validate Bearer token; return canonical email. Sessions are RAM-only."""
-        a: AuthService = request.app.state.auth
-        token = _bearer_token(authorization)
+        a = request.app.state.auth
+        token = credentials.credentials
         email = a.validate_session(token)
+        
         return {"email": email}
-
     # ----- Feature 1: KV -----
 
     @app.post("/v1/kv/write")
     def post_kv_write(
         body: KvWriteBody,
         request: Request,
-        authorization: str | None = Header(default=None),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
     ) -> dict[str, Any]:
-        token = _bearer_token(authorization)
+        token = credentials.credentials
         engine = _kv_engine(request)
         try:
             return engine.write(body.path, body.data, token)
@@ -187,9 +189,9 @@ def create_app(
         request: Request,
         path: str = Query(min_length=1),
         version: int | None = Query(default=None, ge=1),
-        authorization: str | None = Header(default=None),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
     ) -> dict[str, Any]:
-        token = _bearer_token(authorization)
+        token = credentials.credentials
         engine = _kv_engine(request)
         try:
             data = engine.read(path, token, version=version)
@@ -201,9 +203,9 @@ def create_app(
     def delete_kv(
         request: Request,
         path: str = Query(min_length=1),
-        authorization: str | None = Header(default=None),
+        credentials: HTTPAuthorizationCredentials = Depends(security),
     ) -> dict[str, str]:
-        token = _bearer_token(authorization)
+        token = credentials.credentials
         engine = _kv_engine(request)
         try:
             result = engine.delete(path, token)
