@@ -22,6 +22,8 @@ from src.errors import AlreadyInitializedError, DuplicateKeyError, InvalidInputE
 
 USER_STORE_SCHEMA_VERSION = 1
 TRANSIT_KEY_STORE_SCHEMA_VERSION = 1
+MFA_TYPE = "TOTP"
+MFA_ENCRYPTED_SEED_ENVELOPE_LEN = 64
 
 
 class UserStoreValidationError(ValueError):
@@ -41,7 +43,8 @@ def validate_user_store(store: Any) -> dict[str, Any]:
     for email, account in store["users"].items():
         if not isinstance(email, str) or not isinstance(account, dict):
             raise UserStoreValidationError()
-        if set(account) != {"email", "password_hash", "failed_attempts", "locked_until"}:
+        required_fields = {"email", "password_hash", "failed_attempts", "locked_until"}
+        if not required_fields.issubset(account) or not set(account).issubset(required_fields | {"mfa"}):
             raise UserStoreValidationError()
         if account["email"] != email or not email or not isinstance(account["password_hash"], str) or not account["password_hash"]:
             raise UserStoreValidationError()
@@ -55,6 +58,20 @@ def validate_user_store(store: Any) -> dict[str, Any]:
             except ValueError as exc:
                 raise UserStoreValidationError() from exc
             if lock_time.tzinfo is None:
+                raise UserStoreValidationError()
+        mfa = account.get("mfa")
+        if mfa is not None:
+            if (
+                not isinstance(mfa, dict)
+                or set(mfa) != {"type", "encrypted_seed_b64"}
+                or mfa["type"] != MFA_TYPE
+            ):
+                raise UserStoreValidationError()
+            try:
+                encrypted_seed = b64_decode(mfa["encrypted_seed_b64"])
+            except MetadataValidationError as exc:
+                raise UserStoreValidationError() from exc
+            if len(encrypted_seed) != MFA_ENCRYPTED_SEED_ENVELOPE_LEN:
                 raise UserStoreValidationError()
     return store
 

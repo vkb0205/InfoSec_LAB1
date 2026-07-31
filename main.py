@@ -27,6 +27,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("status")
     subparsers.add_parser("register")
     subparsers.add_parser("login")
+    subparsers.add_parser("enable-mfa")
     return parser
 
 
@@ -73,7 +74,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "login":
             email = input("Email: ")
             passphrase = getpass.getpass("Passphrase: ")
-            print(auth.login(email, passphrase))
+            otp = (
+                getpass.getpass("TOTP Code: ")
+                if auth.mfa_required(email)
+                else None
+            )
+            print(auth.login(email, passphrase, otp))
+            return 0
+
+        if args.command == "enable-mfa":
+            email = input("Email: ")
+            passphrase = getpass.getpass("Passphrase: ")
+            enrollment = auth.enable_mfa(email, passphrase)
+            print(f"secret: {enrollment['secret']}")
+            print(f"provisioning_uri: {enrollment['provisioning_uri']}")
             return 0
     except (InvalidInputError, AlreadyInitializedError, UnlockFailedError, VaultError) as exc:
         print(exc.code)
