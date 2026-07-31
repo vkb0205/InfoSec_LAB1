@@ -23,3 +23,5 @@
 2026-07-31 11:02:14,094 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
 2026-07-31 11:23:42,585 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
 2026-07-31 11:23:42,590 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 12:28:11,648 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 12:28:11,649 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com

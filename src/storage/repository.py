@@ -9,14 +9,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.crypto_utils import DEFAULT_METADATA_PATH, validate_metadata
-from src.errors import AlreadyInitializedError, InvalidInputError
+from src.crypto_utils import (
+    DEK_LEN,
+    GCM_TAG_LEN,
+    NONCE_LEN,
+    DEFAULT_METADATA_PATH,
+    MetadataValidationError,
+    b64_decode,
+    validate_metadata,
+)
+from src.errors import AlreadyInitializedError, DuplicateKeyError, InvalidInputError, KeyNotFoundError
 
 USER_STORE_SCHEMA_VERSION = 1
+TRANSIT_KEY_STORE_SCHEMA_VERSION = 1
 
 
 class UserStoreValidationError(ValueError):
     """Internal validation failure for the versioned user-store document."""
+
+
+class TransitKeyStoreValidationError(ValueError):
+    """Internal validation failure for the named-key store."""
 
 
 def validate_user_store(store: Any) -> dict[str, Any]:
@@ -190,107 +203,6 @@ class UserRepository:
                 fh.flush()
                 os.fsync(fh.fileno())
             os.replace(temp_path, self.user_path)
-            MetadataRepository._set_private_permissions(self.user_path)
-            MetadataRepository._fsync_directory(directory)
-        except OSError as exc:
-            raise InvalidInputError() from exc
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink()
-                except FileNotFoundError:
-                    pass
-
-
-TRANSIT_KEY_STORE_SCHEMA_VERSION = 1
-
-
-class TransitKeyStoreValidationError(ValueError):
-    """Internal validation failure for the transit key store document."""
-
-
-def validate_transit_key_store(store: Any) -> dict[str, Any]:
-    if not isinstance(store, dict) or set(store) != {"schema_version", "keys"}:
-        raise TransitKeyStoreValidationError()
-    if store["schema_version"] != TRANSIT_KEY_STORE_SCHEMA_VERSION or not isinstance(store["keys"], dict):
-        raise TransitKeyStoreValidationError()
-    for name, key in store["keys"].items():
-        if not isinstance(name, str) or not name or not isinstance(key, dict):
-            raise TransitKeyStoreValidationError()
-        if set(key) != {"name", "owner_email", "key_usage", "algorithm", "encrypted_key_material_b64", "public_key_b64", "created_at"}:
-            raise TransitKeyStoreValidationError()
-        if key["name"] != name or not isinstance(key["owner_email"], str) or not key["owner_email"]:
-            raise TransitKeyStoreValidationError()
-        if key["key_usage"] not in {"ENCRYPT_DECRYPT", "SIGN_VERIFY"}:
-            raise TransitKeyStoreValidationError()
-        if not isinstance(key["algorithm"], str) or not key["algorithm"]:
-            raise TransitKeyStoreValidationError()
-        if not isinstance(key["encrypted_key_material_b64"], str) or not key["encrypted_key_material_b64"]:
-            raise TransitKeyStoreValidationError()
-        if key["public_key_b64"] is not None and not isinstance(key["public_key_b64"], str):
-            raise TransitKeyStoreValidationError()
-        if not isinstance(key["created_at"], str) or not key["created_at"]:
-            raise TransitKeyStoreValidationError()
-    return store
-
-
-class TransitKeyRepository:
-    def __init__(self, transit_path: str | os.PathLike[str] | None = None) -> None:
-        if transit_path is None:
-            transit_path = Path(__file__).resolve().parents[2] / "data" / "transit_keys.json"
-        self.transit_path = Path(transit_path)
-
-    def read(self) -> dict[str, Any]:
-        if not self.transit_path.exists():
-            return {"schema_version": TRANSIT_KEY_STORE_SCHEMA_VERSION, "keys": {}}
-        try:
-            with self.transit_path.open("r", encoding="utf-8") as fh:
-                return validate_transit_key_store(json.load(fh))
-        except (OSError, json.JSONDecodeError, TransitKeyStoreValidationError) as exc:
-            raise InvalidInputError() from exc
-
-    def create_key(self, key: dict[str, Any]) -> None:
-        store = self.read()
-        try:
-            name = key["name"]
-            if name in store["keys"]:
-                raise InvalidInputError()
-            store["keys"][name] = key
-            validate_transit_key_store(store)
-        except (KeyError, TransitKeyStoreValidationError) as exc:
-            raise InvalidInputError() from exc
-        self._replace(store)
-
-    def replace_key(self, key: dict[str, Any]) -> None:
-        store = self.read()
-        try:
-            name = key["name"]
-            if name not in store["keys"]:
-                raise TransitKeyStoreValidationError()
-            store["keys"][name] = key
-            validate_transit_key_store(store)
-        except (KeyError, TransitKeyStoreValidationError) as exc:
-            raise InvalidInputError() from exc
-        self._replace(store)
-
-    def _replace(self, store: dict[str, Any]) -> None:
-        payload = json.dumps(store, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        directory = self.transit_path.parent
-        temp_path: Path | None = None
-        try:
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd, temp_name = tempfile.mkstemp(prefix=f".{self.transit_path.name}.", suffix=".tmp", dir=directory)
-            temp_path = Path(temp_name)
-            try:
-                os.fchmod(fd, 0o600)
-            except (AttributeError, OSError):
-                pass
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(temp_path, self.transit_path)
-            MetadataRepository._set_private_permissions(self.transit_path)
             MetadataRepository._fsync_directory(directory)
         except OSError as exc:
             raise InvalidInputError() from exc
