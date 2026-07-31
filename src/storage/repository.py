@@ -9,14 +9,29 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from src.crypto_utils import DEFAULT_METADATA_PATH, validate_metadata
-from src.errors import AlreadyInitializedError, InvalidInputError
+from src.crypto_utils import (
+    DEK_LEN,
+    GCM_TAG_LEN,
+    NONCE_LEN,
+    DEFAULT_METADATA_PATH,
+    MetadataValidationError,
+    b64_decode,
+    validate_metadata,
+)
+from src.errors import AlreadyInitializedError, DuplicateKeyError, InvalidInputError, KeyNotFoundError
 
 USER_STORE_SCHEMA_VERSION = 1
+TRANSIT_KEY_STORE_SCHEMA_VERSION = 1
+MFA_TYPE = "TOTP"
+MFA_ENCRYPTED_SEED_ENVELOPE_LEN = 64
 
 
 class UserStoreValidationError(ValueError):
     """Internal validation failure for the versioned user-store document."""
+
+
+class TransitKeyStoreValidationError(ValueError):
+    """Internal validation failure for the named-key store."""
 
 
 def validate_user_store(store: Any) -> dict[str, Any]:
@@ -28,7 +43,8 @@ def validate_user_store(store: Any) -> dict[str, Any]:
     for email, account in store["users"].items():
         if not isinstance(email, str) or not isinstance(account, dict):
             raise UserStoreValidationError()
-        if set(account) != {"email", "password_hash", "failed_attempts", "locked_until"}:
+        required_fields = {"email", "password_hash", "failed_attempts", "locked_until"}
+        if not required_fields.issubset(account) or not set(account).issubset(required_fields | {"mfa"}):
             raise UserStoreValidationError()
         if account["email"] != email or not email or not isinstance(account["password_hash"], str) or not account["password_hash"]:
             raise UserStoreValidationError()
@@ -42,6 +58,20 @@ def validate_user_store(store: Any) -> dict[str, Any]:
             except ValueError as exc:
                 raise UserStoreValidationError() from exc
             if lock_time.tzinfo is None:
+                raise UserStoreValidationError()
+        mfa = account.get("mfa")
+        if mfa is not None:
+            if (
+                not isinstance(mfa, dict)
+                or set(mfa) != {"type", "encrypted_seed_b64"}
+                or mfa["type"] != MFA_TYPE
+            ):
+                raise UserStoreValidationError()
+            try:
+                encrypted_seed = b64_decode(mfa["encrypted_seed_b64"])
+            except MetadataValidationError as exc:
+                raise UserStoreValidationError() from exc
+            if len(encrypted_seed) != MFA_ENCRYPTED_SEED_ENVELOPE_LEN:
                 raise UserStoreValidationError()
     return store
 
@@ -64,13 +94,6 @@ class MetadataRepository:
 
     def read_bytes(self) -> bytes:
         return self.metadata_path.read_bytes()
-
-    @staticmethod
-    def _set_private_permissions(path: Path) -> None:
-        try:
-            os.chmod(path, 0o600)
-        except (AttributeError, OSError):
-            pass
 
     def create(self, metadata: dict[str, Any]) -> None:
         try:
@@ -104,7 +127,6 @@ class MetadataRepository:
             except FileExistsError as exc:
                 raise AlreadyInitializedError() from exc
 
-            self._set_private_permissions(self.metadata_path)
             self._fsync_directory(directory)
         except AlreadyInitializedError:
             raise
@@ -174,177 +196,175 @@ class UserRepository:
         self._replace(store)
 
     def _replace(self, store: dict[str, Any]) -> None:
-        payload = json.dumps(store, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        directory = self.user_path.parent
-        temp_path: Path | None = None
-        try:
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd, temp_name = tempfile.mkstemp(prefix=f".{self.user_path.name}.", suffix=".tmp", dir=directory)
-            temp_path = Path(temp_name)
-            try:
-                os.fchmod(fd, 0o600)
-            except (AttributeError, OSError):
-                pass
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(temp_path, self.user_path)
-            MetadataRepository._set_private_permissions(self.user_path)
-            MetadataRepository._fsync_directory(directory)
-        except OSError as exc:
-            raise InvalidInputError() from exc
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink()
-                except FileNotFoundError:
-                    pass
-
-
-TRANSIT_KEY_STORE_SCHEMA_VERSION = 1
-
-
-class TransitKeyStoreValidationError(ValueError):
-    """Internal validation failure for the transit key store document."""
-
-
-def _validate_transit_version_entry(entry: Any) -> None:
-    if not isinstance(entry, dict):
-        raise TransitKeyStoreValidationError()
-    required = {"encrypted_key_material_b64", "public_key_b64", "created_at"}
-    if set(entry) != required:
-        raise TransitKeyStoreValidationError()
-    if not isinstance(entry["encrypted_key_material_b64"], str) or not entry["encrypted_key_material_b64"]:
-        raise TransitKeyStoreValidationError()
-    if entry["public_key_b64"] is not None and not isinstance(entry["public_key_b64"], str):
-        raise TransitKeyStoreValidationError()
-    if not isinstance(entry["created_at"], str) or not entry["created_at"]:
-        raise TransitKeyStoreValidationError()
+        _replace_json(self.user_path, store)
 
 
 def validate_transit_key_store(store: Any) -> dict[str, Any]:
     if not isinstance(store, dict) or set(store) != {"schema_version", "keys"}:
         raise TransitKeyStoreValidationError()
-    if store["schema_version"] != TRANSIT_KEY_STORE_SCHEMA_VERSION or not isinstance(store["keys"], dict):
+    if store["schema_version"] != TRANSIT_KEY_STORE_SCHEMA_VERSION or not isinstance(store["keys"], list):
         raise TransitKeyStoreValidationError()
-    base_fields = {
-        "name",
-        "owner_email",
-        "key_usage",
-        "algorithm",
-        "encrypted_key_material_b64",
-        "public_key_b64",
-        "created_at",
-    }
-    optional_version_fields = {"latest_version", "versions"}
-    for name, key in store["keys"].items():
-        if not isinstance(name, str) or not name or not isinstance(key, dict):
+
+    identities: set[tuple[str, str]] = set()
+    for record in store["keys"]:
+        if not isinstance(record, dict):
             raise TransitKeyStoreValidationError()
-        key_fields = set(key)
-        if not base_fields.issubset(key_fields):
+        common = {"key_name", "owner_email", "key_usage"}
+        if not common.issubset(record) or not all(isinstance(record[field], str) and record[field] for field in common):
             raise TransitKeyStoreValidationError()
-        if key_fields - base_fields - optional_version_fields:
-            raise TransitKeyStoreValidationError()
-        if key["name"] != name or not isinstance(key["owner_email"], str) or not key["owner_email"]:
-            raise TransitKeyStoreValidationError()
-        if key["key_usage"] not in {"ENCRYPT_DECRYPT", "SIGN_VERIFY"}:
-            raise TransitKeyStoreValidationError()
-        if not isinstance(key["algorithm"], str) or not key["algorithm"]:
-            raise TransitKeyStoreValidationError()
-        if not isinstance(key["encrypted_key_material_b64"], str) or not key["encrypted_key_material_b64"]:
-            raise TransitKeyStoreValidationError()
-        if key["public_key_b64"] is not None and not isinstance(key["public_key_b64"], str):
-            raise TransitKeyStoreValidationError()
-        if not isinstance(key["created_at"], str) or not key["created_at"]:
-            raise TransitKeyStoreValidationError()
-        if "versions" in key or "latest_version" in key:
-            if "versions" not in key or "latest_version" not in key:
-                raise TransitKeyStoreValidationError()
-            if not isinstance(key["latest_version"], int) or key["latest_version"] < 1:
-                raise TransitKeyStoreValidationError()
-            versions = key["versions"]
-            if not isinstance(versions, dict) or not versions:
-                raise TransitKeyStoreValidationError()
-            for ver_s, entry in versions.items():
-                if not isinstance(ver_s, str) or not ver_s.isdigit() or int(ver_s) < 1:
+
+        try:
+            if record["key_usage"] == "ENCRYPT_DECRYPT":
+                legacy_fields = common | {"encrypted_key_material_b64"}
+                versioned_fields = common | {"latest_version", "versions"}
+                if set(record) == legacy_fields:
+                    envelope = b64_decode(record["encrypted_key_material_b64"])
+                    if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
+                        raise TransitKeyStoreValidationError()
+                elif set(record) == versioned_fields:
+                    latest_version = record["latest_version"]
+                    versions = record["versions"]
+                    if (
+                        isinstance(latest_version, bool)
+                        or not isinstance(latest_version, int)
+                        or latest_version < 1
+                        or not isinstance(versions, list)
+                        or len(versions) != latest_version
+                    ):
+                        raise TransitKeyStoreValidationError()
+                    for expected_version, version in enumerate(versions, start=1):
+                        if (
+                            not isinstance(version, dict)
+                            or set(version) != {
+                                "version",
+                                "encrypted_key_material_b64",
+                            }
+                            or isinstance(version["version"], bool)
+                            or not isinstance(version["version"], int)
+                            or version["version"] != expected_version
+                        ):
+                            raise TransitKeyStoreValidationError()
+                        envelope = b64_decode(
+                            version["encrypted_key_material_b64"]
+                        )
+                        if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
+                            raise TransitKeyStoreValidationError()
+                else:
                     raise TransitKeyStoreValidationError()
-                _validate_transit_version_entry(entry)
-            if str(key["latest_version"]) not in versions:
+            elif record["key_usage"] == "SIGN_VERIFY":
+                signing_fields = {"signing_algorithm", "encrypted_private_key_b64", "public_key_b64"}
+                if set(record) != common | signing_fields or record["signing_algorithm"] != "ED25519":
+                    raise TransitKeyStoreValidationError()
+                envelope = b64_decode(record["encrypted_private_key_b64"])
+                public_key = b64_decode(record["public_key_b64"])
+                if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN or len(public_key) != DEK_LEN:
+                    raise TransitKeyStoreValidationError()
+            else:
                 raise TransitKeyStoreValidationError()
+        except (KeyError, MetadataValidationError) as exc:
+            raise TransitKeyStoreValidationError() from exc
+
+        identity = (record["owner_email"], record["key_name"])
+        if identity in identities:
+            raise TransitKeyStoreValidationError()
+        identities.add(identity)
     return store
 
 
 class TransitKeyRepository:
-    def __init__(self, transit_path: str | os.PathLike[str] | None = None) -> None:
-        if transit_path is None:
-            transit_path = Path(__file__).resolve().parents[2] / "data" / "transit_keys.json"
-        self.transit_path = Path(transit_path)
+    """Atomic JSON persistence for DEK-wrapped Transit keys."""
+
+    def __init__(self, key_path: str | os.PathLike[str] | None = None) -> None:
+        if key_path is None:
+            key_path = Path(__file__).resolve().parents[2] / "data/transit_keys.json"
+        self.key_path = Path(key_path)
 
     def read(self) -> dict[str, Any]:
-        if not self.transit_path.exists():
-            return {"schema_version": TRANSIT_KEY_STORE_SCHEMA_VERSION, "keys": {}}
+        if not self.key_path.exists():
+            return {"schema_version": TRANSIT_KEY_STORE_SCHEMA_VERSION, "keys": []}
         try:
-            with self.transit_path.open("r", encoding="utf-8") as fh:
+            with self.key_path.open("r", encoding="utf-8") as fh:
                 return validate_transit_key_store(json.load(fh))
         except (OSError, json.JSONDecodeError, TransitKeyStoreValidationError) as exc:
             raise InvalidInputError() from exc
 
-    def create_key(self, key: dict[str, Any]) -> None:
+    def create_key(self, record: dict[str, Any]) -> None:
         store = self.read()
+        identity = (record.get("owner_email"), record.get("key_name"))
+        if any((item["owner_email"], item["key_name"]) == identity for item in store["keys"]):
+            raise DuplicateKeyError()
+        store["keys"].append(record)
         try:
-            name = key["name"]
-            if name in store["keys"]:
-                raise InvalidInputError()
-            store["keys"][name] = key
             validate_transit_key_store(store)
-        except (KeyError, TransitKeyStoreValidationError) as exc:
+        except TransitKeyStoreValidationError as exc:
             raise InvalidInputError() from exc
-        self._replace(store)
+        _replace_json(self.key_path, store)
 
-    def replace_key(self, key: dict[str, Any]) -> None:
+    def replace_key(self, record: dict[str, Any]) -> None:
         store = self.read()
+        identity = (record.get("owner_email"), record.get("key_name"))
+        for index, existing in enumerate(store["keys"]):
+            if (existing["owner_email"], existing["key_name"]) == identity:
+                store["keys"][index] = record
+                break
+        else:
+            raise KeyNotFoundError()
         try:
-            name = key["name"]
-            if name not in store["keys"]:
-                raise TransitKeyStoreValidationError()
-            store["keys"][name] = key
             validate_transit_key_store(store)
-        except (KeyError, TransitKeyStoreValidationError) as exc:
+        except TransitKeyStoreValidationError as exc:
             raise InvalidInputError() from exc
-        self._replace(store)
+        _replace_json(self.key_path, store)
 
-    def delete_key(self, key_name: str) -> None:
+    def list_keys(self, owner_email: str) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in self.read()["keys"]
+            if record["owner_email"] == owner_email
+        ]
+
+    def get_key(self, owner_email: str, key_name: str) -> dict[str, Any]:
+        for record in self.read()["keys"]:
+            if (record["owner_email"], record["key_name"]) == (owner_email, key_name):
+                return record
+        raise KeyNotFoundError()
+
+    def delete_key(self, owner_email: str, key_name: str) -> None:
         store = self.read()
-        if key_name not in store["keys"]:
-            raise InvalidInputError()
-        del store["keys"][key_name]
-        self._replace(store)
+        remaining = [
+            record
+            for record in store["keys"]
+            if (record["owner_email"], record["key_name"]) != (owner_email, key_name)
+        ]
+        if len(remaining) == len(store["keys"]):
+            raise KeyNotFoundError()
+        store["keys"] = remaining
+        _replace_json(self.key_path, store)
 
-    def _replace(self, store: dict[str, Any]) -> None:
-        payload = json.dumps(store, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        directory = self.transit_path.parent
-        temp_path: Path | None = None
+
+def _replace_json(path: Path, document: dict[str, Any]) -> None:
+    """Atomically replace a JSON document without leaving temporary files."""
+    payload = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    directory = path.parent
+    temp_path: Path | None = None
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=directory)
+        temp_path = Path(temp_name)
         try:
-            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-            fd, temp_name = tempfile.mkstemp(prefix=f".{self.transit_path.name}.", suffix=".tmp", dir=directory)
-            temp_path = Path(temp_name)
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, path)
+        MetadataRepository._fsync_directory(directory)
+    except OSError as exc:
+        raise InvalidInputError() from exc
+    finally:
+        if temp_path is not None:
             try:
-                os.fchmod(fd, 0o600)
-            except (AttributeError, OSError):
+                temp_path.unlink()
+            except FileNotFoundError:
                 pass
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(payload)
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(temp_path, self.transit_path)
-            MetadataRepository._set_private_permissions(self.transit_path)
-            MetadataRepository._fsync_directory(directory)
-        except OSError as exc:
-            raise InvalidInputError() from exc
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink()
-                except FileNotFoundError:
-                    pass

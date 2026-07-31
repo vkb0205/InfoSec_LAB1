@@ -23,11 +23,18 @@ class LockedVaultStub:
         ("list_keys", ("token",)),
         ("revoke_key", ("token", "key-name")),
         ("rotate_key", ("token", "key-name")),
+        ("list_key_versions", ("token", "key-name")),
         ("encrypt", ("token", "key-name", "cGxhaW50ZXh0")),
         ("decrypt", ("token", "vault:key-name:ciphertext")),
         ("create_signing_key", ("token", "signing-key")),
         ("sign", ("token", "signing-key", "bWVzc2FnZQ==")),
         ("verify", ("token", "signing-key", "bWVzc2FnZQ==", "signature")),
+        ("grant_key_access", ("token", "key-name", "user@example.com", ["ENCRYPT"])),
+        ("grant_verify_access", ("token", "key-name", "user@example.com")),
+        ("revoke_key_access", ("token", "key-name", "user@example.com")),
+        ("revoke_verify_access", ("token", "key-name", "user@example.com")),
+        ("get_key_acl", ("token", "key-name")),
+        ("list_shared_keys", ("token",)),
     ],
 )
 def test_locked_transit_operations_fail_before_downstream(method, args) -> None:

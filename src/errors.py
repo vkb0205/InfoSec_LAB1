@@ -8,7 +8,13 @@ DUPLICATE_USER = "DUPLICATE_USER"
 INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 ACCOUNT_LOCKED = "ACCOUNT_LOCKED"
 UNAUTHENTICATED = "UNAUTHENTICATED"
+DUPLICATE_KEY = "DUPLICATE_KEY"
+KEY_NOT_FOUND = "KEY_NOT_FOUND"
+INVALID_CIPHERTEXT = "INVALID_CIPHERTEXT"
+DECRYPTION_FAILED = "DECRYPTION_FAILED"
+INVALID_KEY_USAGE = "INVALID_KEY_USAGE"
 PERMISSION_DENIED = "PERMISSION_DENIED"
+INVALID_SIGNING_ALGORITHM = "INVALID_SIGNING_ALGORITHM"
 NOT_FOUND = "NOT_FOUND"
 
 
@@ -52,10 +58,32 @@ class AccountLockedError(VaultError):
 class UnauthenticatedError(VaultError):
     code = UNAUTHENTICATED
 
+class DuplicateKeyError(VaultError):
+    code = DUPLICATE_KEY
+
+
+class KeyNotFoundError(VaultError):
+    code = KEY_NOT_FOUND
+
+
+class InvalidCiphertextError(VaultError):
+    code = INVALID_CIPHERTEXT
+
+
+class DecryptionFailedError(VaultError):
+    code = DECRYPTION_FAILED
+
+
+class InvalidKeyUsageError(VaultError):
+    code = INVALID_KEY_USAGE
+
 
 class PermissionDeniedError(VaultError):
     code = PERMISSION_DENIED
 
+
+class InvalidSigningAlgorithmError(VaultError):
+    code = INVALID_SIGNING_ALGORITHM
 
 class NotFoundError(VaultError):
     code = NOT_FOUND

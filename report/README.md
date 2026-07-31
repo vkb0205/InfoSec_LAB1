@@ -39,3 +39,63 @@ pytest
 ```
 
 Current Feature 0.1 suite covers initialization contracts, no-plaintext persistence, weak passphrase rejection, create-only publication, fresh entropy, restart locked state, correct unlock, generic unlock failures, KDF bounds, CLI behavior, and locked KV/Transit gates.
+
+## Feature 2.1 — Transit Named Key Management
+
+- `create_key` generates a fresh 32-byte AES-256 key after the vault-unlocked
+  and session-validation gates.
+- The named key is bound to its name, owner email, and
+  `key_usage = "ENCRYPT_DECRYPT"`.
+- AES-256-GCM wraps the key with the in-memory DEK. The stored base64 envelope
+  is `nonce || ciphertext || tag`; the owner/name/usage metadata is authenticated
+  as associated data.
+- `list_keys` returns only the current owner's key names and usages.
+- `revoke_key` permanently removes only the current owner's matching key.
+- Duplicate names are rejected with `DUPLICATE_KEY` within one owner's
+  namespace. Different owners may independently use the same name.
+- Public service results never contain plaintext or base64-encoded raw key
+  material.
+
+## Feature 2.2 — Transit Encryption and Decryption
+
+- `encrypt` strictly decodes the client's base64 plaintext and loads only the
+  authenticated owner's named `ENCRYPT_DECRYPT` key.
+- The service unwraps that key with the in-memory DEK, generates a fresh
+  12-byte nonce, and encrypts with AES-256-GCM.
+- The response is self-describing:
+  `vault:<key_name>:<base64(nonce || ciphertext || tag)>`.
+- `decrypt` parses and validates the envelope, loads the owner-scoped key,
+  authenticates the ciphertext and key name, and returns canonical base64
+  plaintext.
+- Malformed or truncated envelopes, revoked or unknown keys, wrong key usage,
+  and GCM authentication failures are rejected without returning plaintext or
+  key material.
+
+## Feature 2.3 — Transit Named-Key Access Control
+
+- Session validation supplies the canonical requester email before key lookup.
+- Encrypt and decrypt load keys only from that owner's namespace.
+- Foreign, missing, and revoked keys produce the same `PERMISSION_DENIED`
+  response, avoiding key-existence disclosure.
+- Denial happens before DEK access, key unwrapping, or client-data
+  encryption/decryption.
+- Every denied attempt writes a JSON-lines record containing the event type,
+  requester email, and denied key name to `data/logs/access_denied.jsonl`.
+
+## Feature 2.4 — Transit Sign and Verify
+
+- `create_signing_key` supports the assignment's Ed25519 option and stores
+  `key_usage = "SIGN_VERIFY"` plus `signing_algorithm = "ED25519"`.
+- The signing algorithm and `RAW`/`DIGEST` message type are mandatory request
+  fields; the service does not silently choose either value.
+- The 32-byte private key is AES-256-GCM wrapped with the in-memory DEK; its
+  owner, name, usage, and algorithm are authenticated as associated data.
+- The public key is stored separately and used internally for verification.
+  Neither key is returned by create, list, sign, or verify responses.
+- For `RAW`, the service signs a SHA-256 digest of the decoded message. For
+  `DIGEST`, the caller's decoded input must be exactly 32 bytes.
+- Verification returns `{key_name, signature_valid, signing_algorithm}` and
+  reports `false` for tampered messages, cross-key signatures, and malformed
+  signatures.
+- Signing and verification reject wrong key usage, unsupported or mismatched
+  algorithms, missing/revoked keys, and non-owner access.
