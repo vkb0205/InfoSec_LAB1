@@ -3,6 +3,7 @@ import time
 import logging
 import os
 
+from src.audit import AuditIntegrityError, AuditLog, DEFAULT_AUDIT_LOG_PATH
 from src.policy import (
     KV_SECRET,
     PolicyRepository,
@@ -24,15 +25,33 @@ if not kv_logger.handlers:
     kv_logger.addHandler(fh)
 
 class KVEngine:
-    def __init__(self, crypto_engine, storage_backend, auth_module, policy_repository=None):
+    def __init__(
+        self,
+        crypto_engine,
+        storage_backend,
+        auth_module,
+        policy_repository=None,
+        audit_log_path=None,
+    ):
         self.crypto = crypto_engine
         self.store = storage_backend
         self.auth = auth_module
         self.policies = policy_repository if policy_repository is not None else PolicyRepository()
+        self.audit_log = AuditLog(audit_log_path or DEFAULT_AUDIT_LOG_PATH)
 
     def _log_denied(self, operation: str, path: str, caller: str, owner: str):
         msg = f"ACCESS DENIED | Op: {operation} | Path: {path} | Caller: {caller} | Owner: {owner}"
         kv_logger.warning(msg)
+        try:
+            self.audit_log.append({
+                "event": "KV_PERMISSION_DENIED",
+                "operation": operation,
+                "path": path,
+                "requester_email": caller,
+                "owner_email": owner,
+            })
+        except (AuditIntegrityError, OSError, ValueError):
+            pass
 
     def _verify_path_rule(self, path: str) -> str:
         if not isinstance(path, str):

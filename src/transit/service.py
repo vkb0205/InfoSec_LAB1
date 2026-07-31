@@ -13,6 +13,11 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from src.audit import (
+    AuditIntegrityError,
+    AuditLog,
+    DEFAULT_AUDIT_LOG_PATH,
+)
 from src.crypto_utils import (
     DEK_LEN,
     GCM_TAG_LEN,
@@ -54,12 +59,18 @@ class TransitService:
                  auth_validator: Callable[[str], str] | None = None,
                  repository: TransitKeyRepository | None = None,
                  access_log_path: str | Path | None = None,
-                 policy_repository: PolicyRepository | None = None) -> None:
+                 policy_repository: PolicyRepository | None = None,
+                 audit_log_path: str | Path | None = None) -> None:
         self._vault = vault
         self._downstream = downstream
         self._auth_validator = auth_validator
         self._repository = repository if repository is not None else TransitKeyRepository()
         self._access_log_path = Path(access_log_path) if access_log_path is not None else DEFAULT_ACCESS_LOG_PATH
+        self._audit_log = AuditLog(
+            audit_log_path
+            if audit_log_path is not None
+            else DEFAULT_AUDIT_LOG_PATH
+        )
         key_path = getattr(self._repository, "key_path", None)
         policy_path = Path(key_path).with_name("policies.json") if key_path is not None else None
         self._policies = (
@@ -624,6 +635,14 @@ class TransitService:
             with self._access_log_path.open("a", encoding="utf-8") as log:
                 log.write(entry + "\n")
         except OSError:
+            pass
+        try:
+            self._audit_log.append({
+                "event": "TRANSIT_PERMISSION_DENIED",
+                "requester_email": requester_email,
+                "key_name": key_name,
+            })
+        except (AuditIntegrityError, OSError, ValueError):
             pass
         raise PermissionDeniedError()
 
