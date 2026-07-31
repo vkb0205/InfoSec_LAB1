@@ -18,6 +18,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .errors import InvalidInputError
+from .shamir import SHARE_SET_ID_LEN, ShamirError, validate_config
 
 SCHEMA_VERSION = 1
 METADATA_AAD = b"mini-vault:vault-metadata:v1"
@@ -25,6 +26,7 @@ DEFAULT_METADATA_PATH = "data/vault_metadata.json"
 
 KDF_ALGORITHM = "argon2id"
 AEAD_ALGORITHM = "aes-256-gcm"
+SHAMIR_ALGORITHM = "shamir-gf257"
 
 SALT_LEN = 16
 DEK_LEN = 32
@@ -180,34 +182,92 @@ def construct_metadata(*, salt: bytes, nonce: bytes, ciphertext_and_tag: bytes) 
     return metadata
 
 
+def construct_shamir_metadata(
+    *,
+    threshold: int,
+    total_shares: int,
+    share_set_id: bytes,
+    nonce: bytes,
+    ciphertext_and_tag: bytes,
+) -> dict[str, Any]:
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "shamir": {
+            "algorithm": SHAMIR_ALGORITHM,
+            "threshold": threshold,
+            "total_shares": total_shares,
+            "share_set_id_b64": b64_encode(share_set_id),
+        },
+        "aead": {
+            "algorithm": AEAD_ALGORITHM,
+            "nonce_b64": b64_encode(nonce),
+            "ciphertext_and_tag_b64": b64_encode(ciphertext_and_tag),
+        },
+    }
+    validate_metadata(metadata)
+    return metadata
+
+
 def validate_metadata(metadata: Any) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         raise MetadataValidationError()
-    if set(metadata) != {"schema_version", "kdf", "aead"}:
+    fields = set(metadata)
+    passphrase_fields = {"schema_version", "kdf", "aead"}
+    shamir_fields = {"schema_version", "shamir", "aead"}
+    if fields not in (passphrase_fields, shamir_fields):
         raise MetadataValidationError()
     if metadata.get("schema_version") != SCHEMA_VERSION:
         raise MetadataValidationError()
 
-    kdf = metadata.get("kdf")
     aead = metadata.get("aead")
-    if not isinstance(kdf, dict) or not isinstance(aead, dict):
-        raise MetadataValidationError()
-    if set(kdf) != {"algorithm", "salt_b64", "memory_cost_kib", "time_cost", "parallelism", "hash_len"}:
+    if not isinstance(aead, dict):
         raise MetadataValidationError()
     if set(aead) != {"algorithm", "nonce_b64", "ciphertext_and_tag_b64"}:
         raise MetadataValidationError()
-    if kdf["algorithm"] != KDF_ALGORITHM or aead["algorithm"] != AEAD_ALGORITHM:
+    if aead["algorithm"] != AEAD_ALGORITHM:
         raise MetadataValidationError()
 
-    salt = b64_decode(kdf["salt_b64"])
     nonce = b64_decode(aead["nonce_b64"])
     ciphertext_and_tag = b64_decode(aead["ciphertext_and_tag_b64"])
-
-    validate_kdf_parameters(kdf["memory_cost_kib"], kdf["time_cost"], kdf["parallelism"], kdf["hash_len"], salt)
     if len(nonce) != NONCE_LEN:
         raise MetadataValidationError()
     if len(ciphertext_and_tag) < GCM_TAG_LEN + 1:
         raise MetadataValidationError()
+
+    if fields == passphrase_fields:
+        kdf = metadata.get("kdf")
+        if not isinstance(kdf, dict):
+            raise MetadataValidationError()
+        if set(kdf) != {"algorithm", "salt_b64", "memory_cost_kib", "time_cost", "parallelism", "hash_len"}:
+            raise MetadataValidationError()
+        if kdf["algorithm"] != KDF_ALGORITHM:
+            raise MetadataValidationError()
+        salt = b64_decode(kdf["salt_b64"])
+        validate_kdf_parameters(
+            kdf["memory_cost_kib"],
+            kdf["time_cost"],
+            kdf["parallelism"],
+            kdf["hash_len"],
+            salt,
+        )
+    else:
+        shamir = metadata.get("shamir")
+        if not isinstance(shamir, dict) or set(shamir) != {
+            "algorithm",
+            "threshold",
+            "total_shares",
+            "share_set_id_b64",
+        }:
+            raise MetadataValidationError()
+        if shamir["algorithm"] != SHAMIR_ALGORITHM:
+            raise MetadataValidationError()
+        try:
+            validate_config(shamir["threshold"], shamir["total_shares"])
+        except ShamirError as exc:
+            raise MetadataValidationError() from exc
+        share_set_id = b64_decode(shamir["share_set_id_b64"])
+        if len(share_set_id) != SHARE_SET_ID_LEN:
+            raise MetadataValidationError()
 
     return metadata
 
@@ -224,6 +284,21 @@ def extract_metadata_fields(metadata: Any) -> tuple[bytes, bytes, bytes, int, in
         kdf["time_cost"],
         kdf["parallelism"],
         kdf["hash_len"],
+    )
+
+
+def extract_shamir_metadata_fields(
+    metadata: Any,
+) -> tuple[int, int, bytes, bytes, bytes]:
+    validated = validate_metadata(metadata)
+    shamir = validated["shamir"]
+    aead = validated["aead"]
+    return (
+        shamir["threshold"],
+        shamir["total_shares"],
+        b64_decode(shamir["share_set_id_b64"]),
+        b64_decode(aead["nonce_b64"]),
+        b64_decode(aead["ciphertext_and_tag_b64"]),
     )
 
 

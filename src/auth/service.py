@@ -10,6 +10,16 @@ from typing import Callable
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
 
+from src.auth.totp import (
+    TOTP_TYPE,
+    TotpDataError,
+    decrypt_seed,
+    encode_seed,
+    encrypt_seed,
+    generate_seed,
+    provisioning_uri,
+    verify_totp,
+)
 from src.crypto_utils import validate_master_passphrase
 from src.errors import AccountLockedError, InvalidCredentialsError, InvalidInputError, UnauthenticatedError
 from src.storage.repository import UserRepository
@@ -42,9 +52,15 @@ class AuthService:
         if not isinstance(confirmation, str) or passphrase != confirmation:
             raise InvalidInputError()
         validate_master_passphrase(passphrase)
-        self._repository.create_account({"email": canonical, "password_hash": self._hasher.hash(passphrase), "failed_attempts": 0, "locked_until": None})
+        self._repository.create_account({
+            "email": canonical,
+            "password_hash": self._hasher.hash(passphrase),
+            "failed_attempts": 0,
+            "locked_until": None,
+            "mfa": None,
+        })
 
-    def login(self, email: str, passphrase: str) -> str:
+    def login(self, email: str, passphrase: str, otp: str | None = None) -> str:
         canonical = self.canonical_email(email)
         if not isinstance(passphrase, str):
             raise InvalidInputError()
@@ -55,16 +71,24 @@ class AuthService:
         locked_until = self._parse_time(account["locked_until"])
         if locked_until is not None and now < locked_until:
             raise AccountLockedError()
-        try:
-            verified = self._hasher.verify(account["password_hash"], passphrase)
-        except (VerificationError, InvalidHashError):
-            verified = False
-        if not verified:
-            failures = account["failed_attempts"] + 1
-            account["failed_attempts"] = failures
-            account["locked_until"] = self._format_time(now + LOCKOUT_LIFETIME) if failures >= 5 else None
-            self._repository.replace_account(account)
-            raise InvalidCredentialsError()
+
+        if not self._verify_password(account, passphrase):
+            self._reject_authentication(account, now)
+
+        mfa = account.get("mfa")
+        if mfa is not None:
+            try:
+                seed = decrypt_seed(
+                    mfa["encrypted_seed_b64"],
+                    passphrase,
+                    canonical,
+                )
+                valid_otp = verify_totp(seed, otp, now)
+            except (KeyError, TotpDataError):
+                valid_otp = False
+            if not valid_otp:
+                self._reject_authentication(account, now)
+
         account["failed_attempts"] = 0
         account["locked_until"] = None
         self._repository.replace_account(account)
@@ -73,6 +97,46 @@ class AuthService:
             raise InvalidInputError()
         self._sessions[token] = (canonical, now + SESSION_LIFETIME)
         return token
+
+    def enable_mfa(self, email: str, passphrase: str) -> dict[str, str]:
+        canonical = self.canonical_email(email)
+        if not isinstance(passphrase, str):
+            raise InvalidInputError()
+        account = self._repository.read()["users"].get(canonical)
+        if account is None:
+            raise InvalidCredentialsError()
+        now = self._now()
+        locked_until = self._parse_time(account["locked_until"])
+        if locked_until is not None and now < locked_until:
+            raise AccountLockedError()
+        if not self._verify_password(account, passphrase):
+            self._reject_authentication(account, now)
+        if account.get("mfa") is not None:
+            raise InvalidInputError()
+
+        try:
+            seed = generate_seed()
+            secret = encode_seed(seed)
+            encrypted_seed = encrypt_seed(seed, passphrase, canonical)
+            uri = provisioning_uri(secret, canonical)
+        except TotpDataError as exc:
+            raise InvalidInputError() from exc
+        account["mfa"] = {
+            "type": TOTP_TYPE,
+            "encrypted_seed_b64": encrypted_seed,
+        }
+        account["failed_attempts"] = 0
+        account["locked_until"] = None
+        self._repository.replace_account(account)
+        return {
+            "secret": secret,
+            "provisioning_uri": uri,
+        }
+
+    def mfa_required(self, email: str) -> bool:
+        canonical = self.canonical_email(email)
+        account = self._repository.read()["users"].get(canonical)
+        return account is not None and account.get("mfa") is not None
 
     def validate_session(self, token: str) -> str:
         if not isinstance(token, str) or not token or token not in self._sessions:
@@ -88,6 +152,23 @@ class AuthService:
         if not isinstance(now, datetime) or now.tzinfo is None:
             raise InvalidInputError()
         return now.astimezone(timezone.utc)
+
+    def _verify_password(self, account: dict, passphrase: str) -> bool:
+        try:
+            return self._hasher.verify(account["password_hash"], passphrase)
+        except (KeyError, VerificationError, InvalidHashError):
+            return False
+
+    def _reject_authentication(self, account: dict, now: datetime) -> None:
+        failures = account["failed_attempts"] + 1
+        account["failed_attempts"] = failures
+        account["locked_until"] = (
+            self._format_time(now + LOCKOUT_LIFETIME)
+            if failures >= 5
+            else None
+        )
+        self._repository.replace_account(account)
+        raise InvalidCredentialsError()
 
     @staticmethod
     def _format_time(value: datetime) -> str:

@@ -25,6 +25,7 @@ def test_absent_store_is_empty_and_create_is_atomic(tmp_path):
     
     # Permission bits differ on Windows, so we only run this check on POSIX systems
     if sys.platform != "win32":
+    if os.name == "posix":
         assert os.stat(path).st_mode & 0o077 == 0
 
 

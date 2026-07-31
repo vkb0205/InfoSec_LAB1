@@ -49,3 +49,55 @@ class KVService:
         if self._downstream is not None:
             return self._downstream("delete", identity, path)
         raise NotImplementedError("KV delete is out of scope for Feature 0.1")
+
+    def grant_access(
+        self,
+        token: str,
+        path: str,
+        grantee_email: str,
+        permissions: Any,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            return self._downstream(
+                "grant_access",
+                identity,
+                path,
+                grantee_email,
+                permissions,
+            )
+        raise NotImplementedError("KV ACL management requires a downstream KV engine")
+
+    def revoke_access(
+        self,
+        token: str,
+        path: str,
+        grantee_email: str,
+        permissions: Any = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            return self._downstream(
+                "revoke_access",
+                identity,
+                path,
+                grantee_email,
+                permissions,
+            )
+        raise NotImplementedError("KV ACL management requires a downstream KV engine")
+
+    def get_acl(self, token: str, path: str) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            return self._downstream("get_acl", identity, path)
+        raise NotImplementedError("KV ACL inspection requires a downstream KV engine")
+
+    def list_shared(self, token: str) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            return self._downstream("list_shared", identity)
+        raise NotImplementedError("KV ACL discovery requires a downstream KV engine")

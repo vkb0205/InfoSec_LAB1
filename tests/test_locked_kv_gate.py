@@ -22,6 +22,10 @@ class LockedVaultStub:
         ("write", ("token", "secret/path", {"value": "secret"})),
         ("read", ("token", "secret/path")),
         ("delete", ("token", "secret/path")),
+        ("grant_access", ("token", "secret/path", "user@example.com", ["READ"])),
+        ("revoke_access", ("token", "secret/path", "user@example.com")),
+        ("get_acl", ("token", "secret/path")),
+        ("list_shared", ("token",)),
     ],
 )
 def test_locked_kv_operations_fail_before_downstream(method, args) -> None:
