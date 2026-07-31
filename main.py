@@ -84,6 +84,9 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--signature", default=None)
 
     subparsers.add_parser("enable-mfa")
+    serve_parser = subparsers.add_parser("serve")
+    serve_parser.add_argument("--host", default="127.0.0.1", type=str)
+    serve_parser.add_argument("--port", default=8000, type=int)
     return parser
 
 
@@ -501,12 +504,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "transit":
             return _run_transit_command(args, vault, auth)
-            
-    except (InvalidInputError, AlreadyInitializedError, UnlockFailedError, VaultError) as exc:
-        print(exc.code)
+
+        if args.command == "serve":
+            import uvicorn
+
+            from src.api.app import create_app
+
+            uvicorn.run(create_app(), host=args.host, port=args.port)
+            return 0
+
+    
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()  # In ra chính xác dòng code gây lỗi
+        
+        # Vẫn giữ lại phần in mã code nếu có
+        if hasattr(exc, 'code'):
+            print(f"Mã lỗi: {exc.code}")
         return 1
 
-    print("INVALID_INPUT")
+    print("Rơi xuống cuối hàm: Không tìm thấy command!")
     return 1
 
 

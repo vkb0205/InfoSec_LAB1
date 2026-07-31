@@ -69,3 +69,13 @@
 2026-07-31 16:55:40,270 | WARNING | ACCESS DENIED | Op: MANAGE_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
 2026-07-31 16:55:40,284 | WARNING | ACCESS DENIED | Op: READ_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
 2026-07-31 16:55:41,236 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:03,403 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/private | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:03,416 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/does-not-exist | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:07,441 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:07,454 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:10,837 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:10,851 | WARNING | ACCESS DENIED | Op: DELETE | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:10,878 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:10,894 | WARNING | ACCESS DENIED | Op: MANAGE_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:10,908 | WARNING | ACCESS DENIED | Op: READ_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 17:35:11,907 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
