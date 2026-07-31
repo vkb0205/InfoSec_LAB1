@@ -1,6 +1,7 @@
 """User-store persistence safety tests."""
 import json
 import os
+import sys
 
 import pytest
 
@@ -21,7 +22,10 @@ def test_absent_store_is_empty_and_create_is_atomic(tmp_path):
     assert stored["users"]["user@example.com"] == account()
     assert "sessions" not in stored
     assert not list(tmp_path.glob("*.tmp"))
-    assert os.stat(path).st_mode & 0o077 == 0
+    
+    # Permission bits differ on Windows, so we only run this check on POSIX systems
+    if sys.platform != "win32":
+        assert os.stat(path).st_mode & 0o077 == 0
 
 
 def test_malformed_store_fails_safely(tmp_path):

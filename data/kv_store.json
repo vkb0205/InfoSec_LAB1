@@ -1,0 +1,35 @@
+{
+  "secret/a@b.com/foo": {
+    "history": [
+      {
+        "ciphertext_b64": "J+v64jY=",
+        "created_at": 1785468397,
+        "nonce_b64": "1IKXY0IPX7pRkaoZ",
+        "tag_b64": "blBsa3nfjsCz0DrityjcTA==",
+        "version": 1
+      },
+      {
+        "ciphertext_b64": "/WXG3CU=",
+        "created_at": 1785468405,
+        "nonce_b64": "47Aax4b7hcLiJSB1",
+        "tag_b64": "RN3I1skDTG/t+t4x5TDUYA==",
+        "version": 2
+      }
+    ],
+    "latest_version": 2,
+    "path": "secret/a@b.com/foo"
+  },
+  "secret/alice@gmail.com/data": {
+    "history": [
+      {
+        "ciphertext_b64": "ZyPgGWTf",
+        "created_at": 1785469435,
+        "nonce_b64": "6MaQBftYYbadnH/x",
+        "tag_b64": "y6bPmGPiTGLkq5o+3VpkBA==",
+        "version": 1
+      }
+    ],
+    "latest_version": 1,
+    "path": "secret/alice@gmail.com/data"
+  }
+}

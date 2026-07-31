@@ -1,0 +1,1 @@
+{"schema_version":1,"users":{"a@b.com":{"email":"a@b.com","failed_attempts":0,"locked_until":null,"password_hash":"$argon2id$v=19$m=65536,t=3,p=4$M5VFfJ8P2uYr4hcwA8eCcA$3LTCN6t5xq0IrFZZWNL7UYqb9uxWMH1jbSDgCvPb8bI"}}}
