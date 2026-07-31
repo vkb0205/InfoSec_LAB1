@@ -215,10 +215,41 @@ def validate_transit_key_store(store: Any) -> dict[str, Any]:
 
         try:
             if record["key_usage"] == "ENCRYPT_DECRYPT":
-                if set(record) != common | {"encrypted_key_material_b64"}:
-                    raise TransitKeyStoreValidationError()
-                envelope = b64_decode(record["encrypted_key_material_b64"])
-                if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
+                legacy_fields = common | {"encrypted_key_material_b64"}
+                versioned_fields = common | {"latest_version", "versions"}
+                if set(record) == legacy_fields:
+                    envelope = b64_decode(record["encrypted_key_material_b64"])
+                    if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
+                        raise TransitKeyStoreValidationError()
+                elif set(record) == versioned_fields:
+                    latest_version = record["latest_version"]
+                    versions = record["versions"]
+                    if (
+                        isinstance(latest_version, bool)
+                        or not isinstance(latest_version, int)
+                        or latest_version < 1
+                        or not isinstance(versions, list)
+                        or len(versions) != latest_version
+                    ):
+                        raise TransitKeyStoreValidationError()
+                    for expected_version, version in enumerate(versions, start=1):
+                        if (
+                            not isinstance(version, dict)
+                            or set(version) != {
+                                "version",
+                                "encrypted_key_material_b64",
+                            }
+                            or isinstance(version["version"], bool)
+                            or not isinstance(version["version"], int)
+                            or version["version"] != expected_version
+                        ):
+                            raise TransitKeyStoreValidationError()
+                        envelope = b64_decode(
+                            version["encrypted_key_material_b64"]
+                        )
+                        if len(envelope) != NONCE_LEN + DEK_LEN + GCM_TAG_LEN:
+                            raise TransitKeyStoreValidationError()
+                else:
                     raise TransitKeyStoreValidationError()
             elif record["key_usage"] == "SIGN_VERIFY":
                 signing_fields = {"signing_algorithm", "encrypted_private_key_b64", "public_key_b64"}
@@ -257,12 +288,27 @@ class TransitKeyRepository:
         except (OSError, json.JSONDecodeError, TransitKeyStoreValidationError) as exc:
             raise InvalidInputError() from exc
 
-    def create_key(self, record: dict[str, str]) -> None:
+    def create_key(self, record: dict[str, Any]) -> None:
         store = self.read()
         identity = (record.get("owner_email"), record.get("key_name"))
         if any((item["owner_email"], item["key_name"]) == identity for item in store["keys"]):
             raise DuplicateKeyError()
         store["keys"].append(record)
+        try:
+            validate_transit_key_store(store)
+        except TransitKeyStoreValidationError as exc:
+            raise InvalidInputError() from exc
+        _replace_json(self.key_path, store)
+
+    def replace_key(self, record: dict[str, Any]) -> None:
+        store = self.read()
+        identity = (record.get("owner_email"), record.get("key_name"))
+        for index, existing in enumerate(store["keys"]):
+            if (existing["owner_email"], existing["key_name"]) == identity:
+                store["keys"][index] = record
+                break
+        else:
+            raise KeyNotFoundError()
         try:
             validate_transit_key_store(store)
         except TransitKeyStoreValidationError as exc:

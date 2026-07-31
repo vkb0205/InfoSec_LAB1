@@ -26,3 +26,10 @@
 2026-07-31 09:34:01,092 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
 2026-07-31 09:34:01,095 | WARNING | ACCESS DENIED | Op: MANAGE_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
 2026-07-31 09:34:01,095 | WARNING | ACCESS DENIED | Op: READ_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:18,961 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:18,961 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/notes | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:22,896 | WARNING | ACCESS DENIED | Op: WRITE | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:22,897 | WARNING | ACCESS DENIED | Op: DELETE | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:22,904 | WARNING | ACCESS DENIED | Op: READ | Path: secret/alice@example.com/database | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:22,908 | WARNING | ACCESS DENIED | Op: MANAGE_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com
+2026-07-31 09:47:22,908 | WARNING | ACCESS DENIED | Op: READ_POLICY | Path: secret/alice@example.com/item | Caller: bob@example.com | Owner: alice@example.com

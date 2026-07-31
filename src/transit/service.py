@@ -120,6 +120,102 @@ class TransitService:
         self._policies.delete_resource(TRANSIT_KEY, identity, key_name)
         return {"key_name": key_name, "revoked": True}
 
+    def rotate_key(
+        self,
+        token: str,
+        key_name: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            args = ("rotate_key", identity, key_name)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        self._validate_key_name(key_name)
+        owner_email = (
+            identity
+            if key_owner_email is None
+            else canonical_email(key_owner_email)
+        )
+        if owner_email != identity:
+            self._deny_access(identity, key_name)
+        record = self._repository.get_key(owner_email, key_name)
+        if record["key_usage"] != KEY_USAGE:
+            raise InvalidKeyUsageError()
+
+        latest_version = record.get("latest_version", 1)
+        new_version = latest_version + 1
+        key_material = secrets.token_bytes(DEK_LEN)
+        nonce = random_nonce()
+        encrypted = AESGCM(self._vault.get_dek()).encrypt(
+            nonce,
+            key_material,
+            self._key_aad(
+                owner_email,
+                key_name,
+                key_version=new_version,
+            ),
+        )
+        versions = (
+            list(record["versions"])
+            if "versions" in record
+            else [{
+                "version": 1,
+                "encrypted_key_material_b64": record[
+                    "encrypted_key_material_b64"
+                ],
+            }]
+        )
+        versions.append({
+            "version": new_version,
+            "encrypted_key_material_b64": b64_encode(nonce + encrypted),
+        })
+        self._repository.replace_key({
+            "key_name": key_name,
+            "owner_email": owner_email,
+            "key_usage": KEY_USAGE,
+            "latest_version": new_version,
+            "versions": versions,
+        })
+        return {
+            "key_name": key_name,
+            "key_usage": KEY_USAGE,
+            "latest_version": new_version,
+        }
+
+    def list_key_versions(
+        self,
+        token: str,
+        key_name: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        self._require_unlocked()
+        identity = self._require_authenticated(token)
+        if self._downstream is not None:
+            args = ("list_key_versions", identity, key_name)
+            if key_owner_email is not None:
+                args += (key_owner_email,)
+            return self._downstream(*args)
+        self._validate_key_name(key_name)
+        owner_email = (
+            identity
+            if key_owner_email is None
+            else canonical_email(key_owner_email)
+        )
+        if owner_email != identity:
+            self._deny_access(identity, key_name)
+        record = self._repository.get_key(owner_email, key_name)
+        if record["key_usage"] != KEY_USAGE:
+            raise InvalidKeyUsageError()
+        latest_version = record.get("latest_version", 1)
+        return {
+            "key_name": key_name,
+            "latest_version": latest_version,
+            "versions": list(range(1, latest_version + 1)),
+        }
+
     def grant_key_access(
         self,
         token: str,
@@ -264,10 +360,13 @@ class TransitService:
         key_name: str,
         key_usage: str = KEY_USAGE,
         signing_algorithm: str | None = None,
+        key_version: int | None = None,
     ) -> bytes:
         metadata = {"key_name": key_name, "key_usage": key_usage, "owner_email": owner_email}
         if signing_algorithm is not None:
             metadata["signing_algorithm"] = signing_algorithm
+        if key_version is not None:
+            metadata["key_version"] = key_version
         return json.dumps(
             metadata,
             sort_keys=True,
@@ -299,7 +398,7 @@ class TransitService:
         except MetadataValidationError as exc:
             raise InvalidInputError() from exc
 
-        key = self._load_encryption_key(
+        key, key_version = self._load_encryption_key(
             identity,
             owner_email,
             actual_key_name,
@@ -309,14 +408,17 @@ class TransitService:
         encrypted = AESGCM(key).encrypt(
             nonce,
             plaintext,
-            self._ciphertext_aad(actual_key_name),
+            self._ciphertext_aad(actual_key_name, key_version),
         )
         identifier = (
             f"{owner_email}/{actual_key_name}"
             if qualified
             else actual_key_name
         )
-        return f"vault:{identifier}:{b64_encode(nonce + encrypted)}"
+        encoded = b64_encode(nonce + encrypted)
+        if key_version == 1:
+            return f"vault:{identifier}:{encoded}"
+        return f"vault:{identifier}:v{key_version}:{encoded}"
 
     def decrypt(
         self,
@@ -333,10 +435,28 @@ class TransitService:
             return self._downstream(*args)
         if not isinstance(ciphertext, str):
             raise InvalidCiphertextError()
-        parts = ciphertext.split(":", 2)
-        if len(parts) != 3 or parts[0] != "vault":
+        parts = ciphertext.split(":")
+        if len(parts) == 3 and parts[0] == "vault":
+            key_reference, encoded = parts[1], parts[2]
+            key_version = 1
+        elif len(parts) == 4 and parts[0] == "vault":
+            key_reference, version_text, encoded = parts[1], parts[2], parts[3]
+            version_digits = version_text[1:]
+            if (
+                not version_text.startswith("v")
+                or not version_digits
+                or not version_digits.isascii()
+                or not version_digits.isdigit()
+            ):
+                raise InvalidCiphertextError()
+            try:
+                key_version = int(version_digits)
+            except ValueError as exc:
+                raise InvalidCiphertextError() from exc
+            if key_version < 1 or version_text != f"v{key_version}":
+                raise InvalidCiphertextError()
+        else:
             raise InvalidCiphertextError()
-        key_reference, encoded = parts[1], parts[2]
         try:
             owner_email, key_name, _ = self._resolve_key_reference(
                 identity,
@@ -350,17 +470,18 @@ class TransitService:
         if len(envelope) < NONCE_LEN + GCM_TAG_LEN:
             raise InvalidCiphertextError()
 
-        key = self._load_encryption_key(
+        key, _ = self._load_encryption_key(
             identity,
             owner_email,
             key_name,
             "DECRYPT",
+            key_version,
         )
         try:
             plaintext = AESGCM(key).decrypt(
                 envelope[:NONCE_LEN],
                 envelope[NONCE_LEN:],
-                self._ciphertext_aad(key_name),
+                self._ciphertext_aad(key_name, key_version),
             )
         except (InvalidTag, ValueError) as exc:
             raise DecryptionFailedError() from exc
@@ -372,7 +493,8 @@ class TransitService:
         owner_email: str,
         key_name: str,
         permission: str,
-    ) -> bytes:
+        key_version: int | None = None,
+    ) -> tuple[bytes, int]:
         record = self._get_authorized_key(
             requester_email,
             owner_email,
@@ -381,18 +503,47 @@ class TransitService:
         )
         if record["key_usage"] != KEY_USAGE:
             raise InvalidKeyUsageError()
+        selected_version = (
+            record.get("latest_version", 1)
+            if key_version is None
+            else key_version
+        )
+        if "versions" in record:
+            version = next(
+                (
+                    item
+                    for item in record["versions"]
+                    if item["version"] == selected_version
+                ),
+                None,
+            )
+            if version is None:
+                raise InvalidCiphertextError()
+            encrypted_key_material = version["encrypted_key_material_b64"]
+        else:
+            if selected_version != 1:
+                raise InvalidCiphertextError()
+            encrypted_key_material = record["encrypted_key_material_b64"]
         try:
-            envelope = b64_decode(record["encrypted_key_material_b64"])
+            envelope = b64_decode(encrypted_key_material)
             key = AESGCM(self._vault.get_dek()).decrypt(
                 envelope[:NONCE_LEN],
                 envelope[NONCE_LEN:],
-                self._key_aad(owner_email, key_name),
+                self._key_aad(
+                    owner_email,
+                    key_name,
+                    key_version=(
+                        selected_version
+                        if selected_version > 1
+                        else None
+                    ),
+                ),
             )
         except (MetadataValidationError, InvalidTag, ValueError) as exc:
             raise DecryptionFailedError() from exc
         if len(key) != DEK_LEN:
             raise DecryptionFailedError()
-        return key
+        return key, selected_version
 
     def _get_authorized_key(
         self,
@@ -477,8 +628,11 @@ class TransitService:
         raise PermissionDeniedError()
 
     @staticmethod
-    def _ciphertext_aad(key_name: str) -> bytes:
-        return f"mini-vault:transit:v1:{key_name}".encode("utf-8")
+    def _ciphertext_aad(key_name: str, key_version: int = 1) -> bytes:
+        aad = f"mini-vault:transit:v1:{key_name}"
+        if key_version > 1:
+            aad += f":v{key_version}"
+        return aad.encode("utf-8")
 
     def create_signing_key(
         self,
