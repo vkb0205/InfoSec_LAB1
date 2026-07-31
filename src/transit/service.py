@@ -262,6 +262,21 @@ class TransitService:
             "permissions": granted,
         }
 
+    def grant_verify_access(
+        self,
+        token: str,
+        key_name: str,
+        verifier_email: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        return self.grant_key_access(
+            token,
+            key_name,
+            verifier_email,
+            ["VERIFY"],
+            key_owner_email,
+        )
+
     def revoke_key_access(
         self,
         token: str,
@@ -301,6 +316,21 @@ class TransitService:
             "grantee_email": grantee,
             "permissions": remaining,
         }
+
+    def revoke_verify_access(
+        self,
+        token: str,
+        key_name: str,
+        verifier_email: str,
+        key_owner_email: str | None = None,
+    ) -> Any:
+        return self.revoke_key_access(
+            token,
+            key_name,
+            verifier_email,
+            ["VERIFY"],
+            key_owner_email,
+        )
 
     def get_key_acl(
         self,
