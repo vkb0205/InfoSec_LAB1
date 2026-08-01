@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import getpass
+from inspect import signature
 import json
 import sys
 from pathlib import Path
@@ -82,6 +83,16 @@ def _build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--key-name", default=None)
     verify_parser.add_argument("--message", default=None)
     verify_parser.add_argument("--signature", default=None)
+    grant_verify_parser = transit_sub.add_parser("grant-verify")
+    grant_verify_parser.add_argument("--token", default=None)
+    grant_verify_parser.add_argument("--key-name", default=None)
+    grant_verify_parser.add_argument("--verifier-email", default=None)
+    list_shared_parser = transit_sub.add_parser("list-shared")
+    list_shared_parser.add_argument("--token", default=None)
+    revoke_verify_parser = transit_sub.add_parser("revoke-verify")
+    revoke_verify_parser.add_argument("--token", default=None)
+    revoke_verify_parser.add_argument("--key-name", default=None)
+    revoke_verify_parser.add_argument("--verifier-email", default=None)
 
     subparsers.add_parser("enable-mfa")
     serve_parser = subparsers.add_parser("serve")
@@ -153,7 +164,11 @@ def _prompt_text(prompt_text: str, default: str | None = None) -> str:
 
 
 def _run_interactive(vault: Vault, auth: AuthService) -> int:
-    transit = TransitService(vault, auth.validate_session, TransitKeyRepository())
+    transit = TransitService(
+        vault,
+        auth_validator=auth.validate_session,
+        repository=TransitKeyRepository(),
+    )
     kv_store = _KVFileStorage()
     kv_engine = None
     token: str | None = None
@@ -195,6 +210,9 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
         print("12) transit create-signing-key")
         print("13) transit sign")
         print("14) transit verify")
+        print("15) transit grant verify access")
+        print("16) transit list shared keys")
+        print("17) transit revoke verify access")
         print("0) exit")
         
         if current_email:
@@ -291,14 +309,16 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
                 if not ensure_unlocked() or not ensure_session():
                     continue
                 ciphertext = _prompt_text("Ciphertext")
-                print(transit.decrypt(token, ciphertext))
+                plaintext_b64 = transit.decrypt(token, ciphertext)
+                plaintext = base64.b64decode(plaintext_b64, validate=True).decode("utf-8")
+                print(plaintext)
                 continue
 
             if choice == "12":
                 if not ensure_unlocked() or not ensure_session():
                     continue
                 key_name = _prompt_text("Signing key name")
-                print(transit.create_signing_key(token, key_name))
+                print(transit.create_signing_key(token, key_name, "ED25519"))
                 continue
 
             if choice == "13":
@@ -306,7 +326,8 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
                     continue
                 key_name = _prompt_text("Signing key name")
                 message = _prompt_text("Message to sign")
-                print(transit.sign(token, key_name, base64.b64encode(message.encode("utf-8")).decode("utf-8")))
+                message_b64 = base64.b64encode(message.encode("utf-8")).decode("utf-8")
+                print(transit.sign(token, key_name, message_b64, "RAW"))
                 continue
 
             if choice == "14":
@@ -315,7 +336,30 @@ def _run_interactive(vault: Vault, auth: AuthService) -> int:
                 key_name = _prompt_text("Signing key name")
                 message = _prompt_text("Message")
                 signature = _prompt_text("Signature")
-                print(transit.verify(token, key_name, base64.b64encode(message.encode("utf-8")).decode("utf-8"), signature))
+                message_b64 = base64.b64encode(message.encode("utf-8")).decode("utf-8")
+                print(transit.verify(token, key_name, message_b64, "RAW", signature))
+                continue
+
+            if choice == "15":
+                if not ensure_unlocked() or not ensure_session():
+                    continue
+                key_name = _prompt_text("Signing key name")
+                verifier_email = _prompt_text("Verifier email")
+                print(transit.grant_verify_access(token, key_name, verifier_email))
+                continue
+
+            if choice == "16":
+                if not ensure_unlocked() or not ensure_session():
+                    continue
+                print(transit.list_shared_keys(token))
+                continue
+
+            if choice == "17":
+                if not ensure_unlocked() or not ensure_session():
+                    continue
+                key_name = _prompt_text("Signing key name")
+                verifier_email = _prompt_text("Verifier email")
+                print(transit.revoke_verify_access(token, key_name, verifier_email))
                 continue
 
             print("INVALID_INPUT")
@@ -374,7 +418,11 @@ def _run_transit_command(args: argparse.Namespace, vault: Vault, auth: AuthServi
         print("VAULT_LOCKED")
         return 1
     token = _get_required_value("token", args.token)
-    transit = TransitService(vault, auth.validate_session, TransitKeyRepository())
+    transit = TransitService(
+        vault,
+        auth_validator=auth.validate_session,
+        repository=TransitKeyRepository(),
+    )
 
     try:
         if args.transit_command == "create-key":
@@ -388,22 +436,39 @@ def _run_transit_command(args: argparse.Namespace, vault: Vault, auth: AuthServi
             return 0
         if args.transit_command == "decrypt":
             ciphertext = _get_required_value("ciphertext", args.ciphertext)
-            print(transit.decrypt(token, ciphertext))
+            plaintext_b64 = transit.decrypt(token, ciphertext)
+            plaintext = base64.b64decode(plaintext_b64, validate=True).decode("utf-8")
+            print(plaintext)
             return 0
         if args.transit_command == "create-signing-key":
             key_name = _get_required_value("key-name", args.key_name)
-            print(transit.create_signing_key(token, key_name))
+            print(transit.create_signing_key(token, key_name, "ED25519"))
             return 0
         if args.transit_command == "sign":
             key_name = _get_required_value("key-name", args.key_name)
             message = _get_required_value("message", args.message)
-            print(transit.sign(token, key_name, base64.b64encode(message.encode("utf-8")).decode("utf-8")))
+            message_b64 = base64.b64encode(message.encode("utf-8")).decode("utf-8")
+            print(transit.sign(token, key_name, message_b64, "RAW"))
             return 0
         if args.transit_command == "verify":
             key_name = _get_required_value("key-name", args.key_name)
             message = _get_required_value("message", args.message)
             signature = _get_required_value("signature", args.signature)
-            print(transit.verify(token, key_name, base64.b64encode(message.encode("utf-8")).decode("utf-8"), signature))
+            message_b64 = base64.b64encode(message.encode("utf-8")).decode("utf-8")
+            print(transit.verify(token, key_name, message_b64, "RAW", signature))
+            return 0
+        if args.transit_command == "grant-verify":
+            key_name = _get_required_value("key-name", args.key_name)
+            verifier_email = _get_required_value("verifier-email", args.verifier_email)
+            print(transit.grant_verify_access(token, key_name, verifier_email))
+            return 0
+        if args.transit_command == "list-shared":
+            print(transit.list_shared_keys(token))
+            return 0
+        if args.transit_command == "revoke-verify":
+            key_name = _get_required_value("key-name", args.key_name)
+            verifier_email = _get_required_value("verifier-email", args.verifier_email)
+            print(transit.revoke_verify_access(token, key_name, verifier_email))
             return 0
     except PermissionError as exc:
         print(str(exc))
